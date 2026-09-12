@@ -11,7 +11,7 @@ import {
   Schema,
 } from "effect";
 import { NonEmptyText } from "../domain.ts";
-import { AuthError, TokenFileError, type AppError } from "./errors.ts";
+import { AuthError, TokenFileError } from "./errors.ts";
 
 const Token = Schema.RedactedFromValue(NonEmptyText);
 const decodeToken = Schema.decodeUnknownOption(Token);
@@ -26,7 +26,7 @@ const missingToken = new AuthError({
 export class Auth extends Context.Service<
   Auth,
   {
-    readonly token: Effect.Effect<Redacted.Redacted<string>, AppError>;
+    readonly token: Effect.Effect<Redacted.Redacted<string>, AuthError | TokenFileError>;
   }
 >()("tobira/Auth") {
   static readonly layer = Layer.effect(

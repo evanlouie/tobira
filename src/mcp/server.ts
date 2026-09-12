@@ -16,7 +16,8 @@ import { Kagi } from "../kagi/client.ts";
 import { runSearch, searchToolConfig } from "../tools/search.ts";
 import { runSummarizer, summarizerToolConfig } from "../tools/summarizer.ts";
 import { Auth } from "../utils/auth.ts";
-import { formatAppError, type AppError } from "../utils/errors.ts";
+import { formatAppError, type AllQueriesFailed, type AppError } from "../utils/errors.ts";
+import { formatSearchBatch } from "../utils/formatting.ts";
 
 /** Use raw MCP registration to preserve plain text, rather than JSON-stringifying tool output. */
 const registerTool = Effect.fn("registerTool")(function* <A, I>(
@@ -26,7 +27,7 @@ const registerTool = Effect.fn("registerTool")(function* <A, I>(
     readonly description: string;
     readonly inputSchema: Schema.Codec<A, I>;
   },
-  run: (input: A) => Effect.Effect<string, AppError, Kagi | Auth>,
+  run: (input: A) => Effect.Effect<string, AppError | AllQueriesFailed, Kagi | Auth>,
 ) {
   const server = yield* McpServer.McpServer;
   const services = yield* Effect.context<Kagi | Auth>();
@@ -66,7 +67,9 @@ const registerTool = Effect.fn("registerTool")(function* <A, I>(
 
 export const toolsLayer = Layer.effectDiscard(
   Effect.gen(function* () {
-    yield* registerTool(searchToolConfig, runSearch);
+    yield* registerTool(searchToolConfig, (input) =>
+      runSearch(input).pipe(Effect.map(formatSearchBatch)),
+    );
     yield* registerTool(summarizerToolConfig, runSummarizer);
   }),
 );

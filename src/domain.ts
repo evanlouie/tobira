@@ -1,4 +1,5 @@
-import { Boolean, Data, Effect, Option, Schema, SchemaTransformation } from "effect";
+import { Array, Boolean, Data, Effect, Option, Result, Schema, SchemaTransformation } from "effect";
+import type { AppError, QueryFailure } from "./utils/errors.ts";
 
 export const NonEmptyText = Schema.Trim.check(Schema.isMinLength(1));
 export const Url = Schema.String.check(
@@ -55,11 +56,9 @@ export const SummaryLength = Schema.Literals(ARTICLE_SUMMARY_LENGTHS);
 export const Language = Schema.Literals(SUPPORTED_LANGUAGES);
 
 export const SearchInput = Schema.Struct({
-  queries: Schema.Array(NonEmptyText)
-    .check(Schema.isMinLength(1), Schema.isMaxLength(10))
-    .annotate({
-      description: "One to ten concise search queries. Each query must include its own context.",
-    }),
+  queries: Schema.NonEmptyArray(NonEmptyText).check(Schema.isMaxLength(10)).annotate({
+    description: "One to ten concise search queries. Each query must include its own context.",
+  }),
   limit: Schema.OptionFromOptionalKey(SearchLimit).annotate({
     description: "Maximum results per query (default: 10, max: 50).",
   }),
@@ -204,3 +203,26 @@ export type SearchResult = typeof SearchResult.Type;
 export interface SearchResponse {
   readonly data: ReadonlyArray<SearchResult>;
 }
+
+/** Query identity is independent of whether execution succeeded or failed. */
+export interface QueryOutcome {
+  readonly index: number;
+  readonly query: string;
+  readonly result: Result.Result<SearchResponse, AppError>;
+}
+
+export interface QuerySuccess {
+  readonly index: number;
+  readonly query: string;
+  readonly response: SearchResponse;
+}
+
+/** A successful batch always contains at least one successful query, even if it found no results. */
+export type SearchBatch = Data.TaggedEnum<{
+  Complete: { readonly results: Array.NonEmptyReadonlyArray<QuerySuccess> };
+  Partial: {
+    readonly results: Array.NonEmptyReadonlyArray<QuerySuccess>;
+    readonly failures: Array.NonEmptyReadonlyArray<QueryFailure>;
+  };
+}>;
+export const SearchBatch = Data.taggedEnum<SearchBatch>();

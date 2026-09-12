@@ -1,4 +1,4 @@
-import { Data, Inspectable, Option, Schema } from "effect";
+import { Array, Data, Inspectable, Option, Schema } from "effect";
 
 interface ErrorDetails {
   readonly message: string;
@@ -30,6 +30,23 @@ export type AppError =
   | ParseError
   | KagiChallengeError;
 
+export interface QueryFailure {
+  readonly index: number;
+  readonly query: string;
+  readonly error: AppError;
+}
+
+export const formatQueryFailure = ({ query, error }: QueryFailure): string =>
+  `Query "${query}": ${error.message}`;
+
+export class AllQueriesFailed extends Data.TaggedError("AllQueriesFailed")<{
+  readonly failures: Array.NonEmptyReadonlyArray<QueryFailure>;
+}> {
+  override get message(): string {
+    return `All search queries failed.\n${Array.join(Array.map(this.failures, formatQueryFailure), "\n")}`;
+  }
+}
+
 const Message = Schema.Struct({ message: Schema.OptionFromOptionalNullOr(Schema.Unknown) });
 
 export const errorMessage = (error: unknown): string =>
@@ -39,4 +56,5 @@ export const errorMessage = (error: unknown): string =>
     Inspectable.toStringUnknown,
   );
 
-export const formatAppError = (error: AppError): string => `Error: ${error.message}`;
+export const formatAppError = (error: AppError | AllQueriesFailed): string =>
+  `Error: ${error.message}`;

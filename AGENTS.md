@@ -14,21 +14,51 @@ bun run test:integration      # Live Kagi tests; requires a session token
 bunx @modelcontextprotocol/inspector bun src/index.ts mcp
 ```
 
-## Effect conventions
+## Coding style
 
-This is an Effect v4 application running on Bun. `effect` and `@effect/platform-bun` are pinned to `4.0.0-rc.115`.
+These conventions apply to application and test code, not the read-only vendored subtree. Effect idioms take precedence over ordinary TypeScript conventions.
+
+### Model the domain before writing control flow
+
+- Start with types that express the domain's valid values, states, and actions. Make invalid combinations unrepresentable rather than checking for them throughout the application.
+- Use `Data.TaggedEnum` heavily for mutually exclusive variants, actions, events, and state transitions. Dispatch exhaustively with `$match` so adding a variant exposes missing handlers at compile time.
+- Give each variant only its relevant data. An article can carry a length; keypoints cannot. A ready summary carries output; a rejected summary carries a message, never both.
+- Use `Option` for presence and absence, and non-empty collection types when cardinality matters. Avoid collections of flags, counters, and optional fields that require callers to reconstruct the state.
+- Keep transformations and state reducers pure. Prefer immutable values and inferred types. Avoid `any`, non-null assertions, and casts that bypass domain constraints.
+
+Use `Effect<A, E>` for computations and `Result<A, E>` for completed success or failure values. Do not recreate generic success/failure unions with `Data.TaggedEnum`. Reserve custom tagged variants for domain distinctions such as complete versus partial batches. Use `Effect.result` only when failures must be collected as values; keep aggregate failures in the outer Effect error channel.
+
+### Branch on domain values, not incidental conditions
+
+Treat `if` and `if/else` trees as a modelling smell. First identify the domain distinction, encode it as a type, and then dispatch on that value. Do not mechanically replace an `if` tree with a `Boolean.match` tree.
+
+- Use tagged dispatch for domain variants, `Option.match` for absence, and collection matching for empty versus non-empty values.
+- JavaScript boolean logic operators `&&`, `||`, `!`, `&&=`, and `||=` are banned. Use Effect's `Boolean` module instead.
+- Ternary expressions are banned. Use `Boolean.match` when the decision genuinely is boolean, rather than a domain distinction waiting to be named.
+- `Boolean.and` and `Boolean.or` evaluate both arguments. Preserve short-circuiting with lazy `Boolean.match` branches when evaluation performs work or requires a precondition.
+- Reserve raw boolean predicates for boundary classification and low-level runtime checks. Preserve type narrowing through tagged or `Option` dispatch, not assertions. Comparisons such as `===` and `<` remain valid for classification.
+
+### Validate and normalize at boundaries
+
+- Decode external inputs and encode external outputs with `Schema`. Share codecs between CLI and MCP rather than duplicating validation logic.
+- Convert external strings, optional fields, and defaults into domain values before dispatch. Domain operations should consume valid requests, not repeatedly interpret raw options.
+- Use `Option` instead of `null` or `undefined` inside the application. Nullable values are allowed only where external libraries or wire formats require them; convert them at that boundary.
+- Define expected errors with `Data.TaggedError`, never `Data.TaggedEnum`. Keep them in Effect's typed error channel and handle them with tag-based recovery. Yield error instances directly in generators.
+- Keep credentials `Redacted` until the authenticated request boundary. Do not expose them in validation errors, logs, or tracing attributes.
+
+### Use Effect as the standard library
+
+- Prefer Effect modules over native JavaScript equivalents, including `Array`, `Boolean`, `Number`, `String`, and `Record`. Check Effect's API before adding a helper or dependency.
+- Use Effect for asynchronous control flow, concurrency, cancellation, timeouts, and resource management. Keep promises and runtime execution at integration boundaries, not in domain operations.
+- Define reusable effectful operations with `Effect.fn`; use `Effect.fnUntraced` where tracing adds no value and `Effect.gen` for inline programs.
+- Define services with `Context.Service` and inject implementations through layers. Compose live services in `src/services.ts`. Use Effect's configuration, filesystem, path, HTTP, CLI, and MCP modules.
+- Keep designs simple. Add types that express real distinctions, not wrappers around every value. Cheerio remains the HTML parsing boundary because Effect does not replace that parser.
+
+## Effect version and reference
+
+This is an Effect v4 application running on Bun. `effect` and `@effect/platform-bun` are pinned to `4.0.0-rc.115`. When upgrading, use the latest v4 RC and keep platform package versions aligned.
 
 Read `repos/effect/LLMS.md` before changing Effect code. The existing Git subtree under `repos/effect/` is a read-only reference. Inspect its examples and source, but check the installed RC declarations when the upstream snapshot differs. Runtime imports must come from installed packages, never from `repos/`.
-
-- Use Effect for control flow, concurrency, cancellation, and resource management. Define reusable operations with `Effect.fn` and use `Effect.gen` for inline programs.
-- Define services with `Context.Service` and inject implementations through layers. Compose live services in `src/services.ts`.
-- Use `Option` for absent domain values. Decode and encode external data with `Schema`. Nullable values belong only at external library or serialization boundaries.
-- Use `Data.TaggedEnum` for domain variants and actions, with exhaustive `$match` dispatch. Errors extend `Data.TaggedError`, not `Data.TaggedEnum`.
-- Prefer Effect's standard-library modules over native JavaScript collection, configuration, timing, and filesystem APIs. Cheerio remains the HTML parsing boundary.
-
-JavaScript boolean logic operators (`&&`, `||`, `!`, `&&=`, and `||=`) and ternary expressions are banned in application and test code. Use Effect's `Boolean` module instead. Use `Boolean.match` for conditional values and lazy branches. `Boolean.and` and `Boolean.or` evaluate both arguments, so use `Boolean.match` when short-circuiting matters. Keep type narrowing through `Option` combinators rather than adding casts. These rules do not apply to the read-only vendored subtree.
-
-Model domain decisions as types before writing branches. Prefer exclusive tagged variants over boolean flags, counters, or optional fields whose combinations need interpretation. Decode external values into those variants at the boundary, then use exhaustive dispatch. Use `Option` and non-empty collections for presence and cardinality. Do not replace an `if` tree with a `Boolean.match` tree without fixing the model. Reserve boolean predicates for boundary classification and low-level runtime checks.
 
 ## Architecture
 
@@ -36,10 +66,11 @@ The CLI and MCP adapters call shared Effect runners. No separate MCP SDK, Zod, n
 
 | File | Responsibility |
 | --- | --- |
-| `src/index.ts` | Bun runtime entry point, action dispatch, exit codes, and stderr diagnostics |
+| `src/index.ts` | Bun runtime entry point and process exit code |
 | `src/domain.ts` | Schema codecs and tagged actions, summary styles, and sources |
 | `src/services.ts` | Live Auth, HTTP, Kagi, and Bun layer composition |
 | `src/cli/parser.ts` | Effect CLI commands, typed flags, aliases, and generated help |
+| `src/cli/app.ts` | Action dispatch, boundary formatting, stderr diagnostics, and exit codes as values |
 | `src/mcp/server.ts` | Effect MCP stdio server and Schema-derived tool registration |
 | `src/kagi/client.ts` | Injectable Kagi search and summarization service |
 | `src/kagi/http.ts` | Authenticated Effect HttpClient calls and response validation |
@@ -57,7 +88,11 @@ Authentication resolves per operation, in this order:
 
 Tokens remain `Redacted` until constructing the Kagi cookie. Do not include tokens or authenticated request objects in diagnostics.
 
-Search accepts one to ten queries and limits results to between 1 and 50 per query. `Effect.forEach` runs queries concurrently while preserving input order and partial failures. Result numbers continue across queries. Search timeouts are 10 seconds per query; summary timeouts are 60 seconds. Both interrupt the underlying HTTP request.
+Search accepts one to ten queries and limits results to between 1 and 50 per query. `SearchInput` preserves the non-empty query constraint in its TypeScript type. `Effect.forEach` runs queries concurrently while preserving input order and partial failures. Result numbers continue across queries. Search timeouts are 10 seconds per query; summary timeouts are 60 seconds. Both interrupt the underlying HTTP request.
+
+`runSearch` returns a typed `SearchBatch.Complete` or `SearchBatch.Partial`, each with at least one successful query. A valid response with zero results is a successful query. If every query fails, `AllQueriesFailed` carries a non-empty list of indexed query failures in the error channel. Authentication failures remain separate errors. Each query outcome pairs its index and query text with `Result<SearchResponse, AppError>`. `Effect.result` captures typed failures for aggregation; defects and interruption are not converted into query outcomes.
+
+CLI and MCP format batches only after the outcome is established. All-failed batches produce CLI exit code 1 with stderr diagnostics and MCP `isError: true`. Partial batches remain successful and retain their per-query diagnostics. Preserve query indices so duplicate queries retain their positions.
 
 `SummarizerInput` is a codec from the external field union to a typed URL summary request. The article variant alone carries a length. CLI flags first encode through `SummarizerFields`, then decode through this codec before action dispatch. MCP uses the same codec. Encoding emits the explicit summary style, including the default article style.
 

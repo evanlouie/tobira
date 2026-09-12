@@ -1,23 +1,44 @@
-import { Array, Data, Effect, Option } from "effect";
-import { SearchInput, type SearchResponse } from "../domain.ts";
+import { Array, Effect, Option, Result } from "effect";
+import { SearchBatch, SearchInput, type QueryOutcome } from "../domain.ts";
 import { Kagi } from "../kagi/client.ts";
 import { resolveToken } from "../utils/auth.ts";
-import type { AppError } from "../utils/errors.ts";
-import { formatSearchResults } from "../utils/formatting.ts";
+import { AllQueriesFailed } from "../utils/errors.ts";
 import { withTimeout } from "../utils/timeout.ts";
 
-export type QueryOutcome = Data.TaggedEnum<{
-  Succeeded: { readonly query: string; readonly response: SearchResponse };
-  Failed: { readonly query: string; readonly error: AppError };
-}>;
-export const QueryOutcome = Data.taggedEnum<QueryOutcome>();
+const withQueryContext = ({ index, query, result }: QueryOutcome) =>
+  Result.mapBoth(result, {
+    onSuccess: (response) => ({ index, query, response }),
+    onFailure: (error) => ({ index, query, error }),
+  });
+
+/** The first outcome guarantees a non-empty batch without inventing an empty-batch state. */
+const resolveBatch = ([first, ...rest]: Array.NonEmptyReadonlyArray<QueryOutcome>): Effect.Effect<
+  SearchBatch,
+  AllQueriesFailed
+> => {
+  const [failures, results] = Array.partition(rest, withQueryContext);
+  return Result.match(withQueryContext(first), {
+    onSuccess: (first) =>
+      Array.match(failures, {
+        onEmpty: () => Effect.succeed(SearchBatch.Complete({ results: [first, ...results] })),
+        onNonEmpty: (failures) =>
+          Effect.succeed(SearchBatch.Partial({ results: [first, ...results], failures })),
+      }),
+    onFailure: (first) =>
+      Array.match(results, {
+        onEmpty: () => Effect.fail(new AllQueriesFailed({ failures: [first, ...failures] })),
+        onNonEmpty: (results) =>
+          Effect.succeed(SearchBatch.Partial({ results, failures: [first, ...failures] })),
+      }),
+  });
+};
 
 export const runSearch = Effect.fn("runSearch")(function* (input: SearchInput) {
   yield* resolveToken;
   const kagi = yield* Kagi;
   const outcomes = yield* Effect.forEach(
     input.queries,
-    (query) =>
+    (query, index) =>
       withTimeout(
         kagi.search(
           query,
@@ -26,34 +47,12 @@ export const runSearch = Effect.fn("runSearch")(function* (input: SearchInput) {
         10_000,
         "Search timeout",
       ).pipe(
-        Effect.match({
-          onSuccess: (response) => QueryOutcome.Succeeded({ query, response }),
-          onFailure: (error) => QueryOutcome.Failed({ query, error }),
-        }),
+        Effect.result,
+        Effect.map((result) => ({ index, query, result })),
       ),
     { concurrency: 10 },
   );
-  const responses = Array.map(
-    outcomes,
-    QueryOutcome.$match({
-      Succeeded: ({ response }) => response,
-      Failed: () => ({ data: [] }),
-    }),
-  );
-  const errors = Array.getSomes(
-    Array.map(
-      outcomes,
-      QueryOutcome.$match({
-        Succeeded: () => Option.none<string>(),
-        Failed: ({ query, error }) => Option.some(`Query "${query}": ${error.message}`),
-      }),
-    ),
-  );
-  const text = formatSearchResults(input.queries, responses);
-  return Array.match(errors, {
-    onEmpty: () => text,
-    onNonEmpty: (errors) => `${text}\n\nErrors encountered:\n${Array.join(errors, "\n")}`,
-  });
+  return yield* resolveBatch(outcomes);
 });
 
 export const searchToolConfig = {

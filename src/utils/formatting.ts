@@ -1,5 +1,11 @@
-import { Array, Option } from "effect";
-import type { SearchResponse } from "../domain.ts";
+import { Array, Option, Order, Result } from "effect";
+import {
+  SearchBatch,
+  type QueryOutcome,
+  type QuerySuccess,
+  type SearchResponse,
+} from "../domain.ts";
+import { formatQueryFailure } from "./errors.ts";
 
 /** Number results continuously across queries, including partial failures. */
 export function formatSearchResults(
@@ -33,3 +39,38 @@ export function formatSearchResults(
   );
   return Array.join(chunks, "\n\n");
 }
+
+const formatQueryOutcomes = (outcomes: ReadonlyArray<QueryOutcome>): string => {
+  const ordered = Array.sort(
+    outcomes,
+    Order.mapInput(Order.Number, (outcome: QueryOutcome) => outcome.index),
+  );
+  return formatSearchResults(
+    Array.map(ordered, ({ query }) => query),
+    Array.map(ordered, ({ result }) => Result.getOrElse(result, () => ({ data: [] }))),
+  );
+};
+
+const successfulOutcome = ({ index, query, response }: QuerySuccess): QueryOutcome => ({
+  index,
+  query,
+  result: Result.succeed(response),
+});
+
+/** CLI and MCP render only after the batch has a typed success outcome. */
+export const formatSearchBatch = SearchBatch.$match({
+  Complete: ({ results }) => formatQueryOutcomes(Array.map(results, successfulOutcome)),
+  Partial: ({ results, failures }) => {
+    const text = formatQueryOutcomes(
+      Array.appendAll(
+        Array.map(results, successfulOutcome),
+        Array.map(failures, ({ index, query, error }) => ({
+          index,
+          query,
+          result: Result.fail(error),
+        })),
+      ),
+    );
+    return `${text}\n\nErrors encountered:\n${Array.join(Array.map(failures, formatQueryFailure), "\n")}`;
+  },
+});

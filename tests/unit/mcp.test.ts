@@ -81,18 +81,24 @@ describe("MCP stdio protocol", () => {
         );
         const searchCalls = yield* Ref.make(0);
         const kagi = Layer.succeed(Kagi, {
-          search: () =>
+          search: (query) =>
             Ref.update(searchCalls, (count) => count + 1).pipe(
-              Effect.as({
-                data: [
-                  {
-                    title: "Example",
-                    url: "https://example.com",
-                    snippet: "Snippet",
-                    publishedDate: Option.none(),
-                  },
-                ],
-              }),
+              Effect.andThen(
+                Boolean.match(query === "failed", {
+                  onTrue: () => Effect.fail(new RateLimitError({ message: "rate limited" })),
+                  onFalse: () =>
+                    Effect.succeed({
+                      data: [
+                        {
+                          title: "Example",
+                          url: "https://example.com",
+                          snippet: "Snippet",
+                          publishedDate: Option.none(),
+                        },
+                      ],
+                    }),
+                }),
+              ),
             ),
           summarize: () => Effect.fail(new RateLimitError({ message: "rate limited" })),
         });
@@ -180,6 +186,33 @@ describe("MCP stdio protocol", () => {
         );
         expect(invalidResult.isError).toEqual(Option.some(true));
         expect(yield* Ref.get(searchCalls)).toBe(1);
+
+        const failedSearch = yield* request(6, "tools/call", {
+          name: "kagi_search_fetch",
+          arguments: { queries: ["failed", "failed"] },
+        });
+        const failedResult = yield* Schema.decodeUnknownEffect(ToolResult)(
+          Option.getOrThrow(failedSearch.result),
+        );
+        expect(failedResult.isError).toEqual(Option.some(true));
+        expect(failedResult.content).toEqual([
+          { type: "text", text: expect.stringContaining("All search queries failed.") },
+        ]);
+
+        const partialSearch = yield* request(7, "tools/call", {
+          name: "kagi_search_fetch",
+          arguments: { queries: ["failed", "example"] },
+        });
+        const partialResult = yield* Schema.decodeUnknownEffect(ToolResult)(
+          Option.getOrThrow(partialSearch.result),
+        );
+        expect(Option.getOrElse(partialResult.isError, () => false)).toBe(false);
+        expect(partialResult.content).toEqual([
+          { type: "text", text: expect.stringContaining("1: Example") },
+        ]);
+        expect(partialResult.content).toEqual([
+          { type: "text", text: expect.stringContaining('Query "failed": rate limited') },
+        ]);
       }).pipe(Effect.scoped, Effect.timeout("5 seconds")),
     );
   });

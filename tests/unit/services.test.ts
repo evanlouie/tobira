@@ -7,6 +7,7 @@ import { buildSummaryRequest } from "../../src/kagi/summarize.ts";
 import { runSearch } from "../../src/tools/search.ts";
 import { runSummarizer } from "../../src/tools/summarizer.ts";
 import { RateLimitError } from "../../src/utils/errors.ts";
+import { formatSearchBatch } from "../../src/utils/formatting.ts";
 import { authTest, kagiTest } from "../helpers.ts";
 
 describe("Kagi service", () => {
@@ -119,9 +120,11 @@ describe("concurrent search", () => {
             }),
           summarize: () => Effect.die("not used"),
         });
-        const text = yield* runSearch(
+        const batch = yield* runSearch(
           Schema.decodeUnknownSync(SearchInput)({ queries: ["first", "second"] }),
         ).pipe(Effect.provide(Layer.merge(authTest, Layer.succeed(Kagi, kagi))));
+        expect(batch._tag).toBe("Partial");
+        const text = formatSearchBatch(batch);
         expect(text).toContain('Results for search query "first"');
         expect(text).toContain('Results for search query "second"');
         expect(text).toContain("1: First");

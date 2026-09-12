@@ -120,6 +120,8 @@ Notes:
 - Accepts one to ten queries.
 - Each positional argument is treated as one complete query.
 - Results are numbered continuously across all queries.
+- Partial failures retain successful query results and include per-query diagnostics.
+- If every query fails, the CLI exits with code `1` and MCP sets `isError: true`. Valid searches with zero results still succeed.
 
 ### Summarize
 
@@ -277,6 +279,7 @@ CLI / MCP → shared tool runners → Kagi → KagiHttp → Effect HttpClient
 | --- | --- |
 | `src/domain.ts` | Schema codecs, optional values, summary styles, and tagged application actions |
 | `src/cli/parser.ts` | Effect CLI commands, flags, aliases, and generated help |
+| `src/cli/app.ts` | Action dispatch, boundary formatting, diagnostics, and exit codes |
 | `src/mcp/server.ts` | Effect MCP stdio transport and Schema-derived tool definitions |
 | `src/kagi/client.ts` | Injectable Kagi search and summarization service |
 | `src/kagi/http.ts` | Authenticated HTTP requests, response validation, and challenge detection |
@@ -285,13 +288,15 @@ CLI / MCP → shared tool runners → Kagi → KagiHttp → Effect HttpClient
 | `src/tools/` | Shared runners, concurrent searches, partial results, and timeouts |
 | `src/utils/` | Authentication, typed errors, formatting, and timeout composition |
 
-Domain values use `Option` for absence. `Data.TaggedEnum` models actions, summary sources and styles, parser states and events, response dispositions, and query outcomes. Expected failures extend `Data.TaggedError`. Schema codecs decode CLI, MCP, HTML, and summary inputs and encode outgoing request fields. Session tokens remain `Redacted` until the HTTP cookie boundary.
+Domain values use `Option` for absence. `Data.TaggedEnum` models actions, summary sources and styles, parser states and events, response dispositions, and batch completeness. Per-query outcomes use `Result` with query identity metadata. Expected failures extend `Data.TaggedError`. Schema codecs decode CLI, MCP, HTML, and summary inputs and encode outgoing request fields. Session tokens remain `Redacted` until the HTTP cookie boundary.
 
 Summary inputs decode into typed requests before dispatch. Only the article variant can carry a length; keypoints and eli5 reject that field at the boundary. Encoding emits an explicit summary style, including the default article style.
 
 The summary parser reduces frames through `Empty`, `Unreadable`, `Pending`, `Ready`, and `Rejected` states. Each state carries only its relevant data. Metadata preserves progress, output replaces the previous snapshot, and rejection is terminal.
 
-Searches run with bounded `Effect.forEach` concurrency and preserve query order. Effect timeouts interrupt requests and run their finalizers. MCP uses the same runners, returns plain text, and marks operational failures with `isError: true`. Closing stdin shuts down the server cleanly.
+Searches run with bounded `Effect.forEach` concurrency and preserve query order, including duplicate queries. The search runner returns a typed `Complete` or `Partial` batch with at least one successful query. If every query fails, it raises `AllQueriesFailed` with the individual failures. CLI and MCP format the batch only after its outcome is established.
+
+Effect timeouts interrupt requests and run their finalizers. MCP uses the same runners, returns plain text, and marks operational failures with `isError: true`. Closing stdin shuts down the server cleanly.
 
 ### Effect reference and tooling
 

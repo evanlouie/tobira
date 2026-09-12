@@ -4,6 +4,7 @@ import {
   Action,
   ARTICLE_SUMMARY_LENGTHS,
   NonEmptyText,
+  SearchInput,
   SearchLimit,
   SUMMARY_TYPES,
   SUPPORTED_LANGUAGES,
@@ -28,7 +29,11 @@ export const makeCli = <E, R>(dispatch: (action: Action) => Effect.Effect<void, 
         Flag.withDescription("Results per query (default: 10, max: 50)."),
       ),
     },
-    (input) => dispatch(Action.Search({ input })),
+    (input) =>
+      Schema.decodeUnknownEffect(Schema.toType(SearchInput))(input).pipe(
+        Effect.mapError((error) => new ValidationError({ message: error.message })),
+        Effect.flatMap((input) => dispatch(Action.Search({ input }))),
+      ),
   ).pipe(Command.withDescription("Search Kagi for one to ten queries."));
 
   const summarize = Command.make(
