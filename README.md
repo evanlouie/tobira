@@ -1,6 +1,6 @@
 # tobira
 
-A lightweight Bun CLI with an inlined Kagi session-token client. It provides direct terminal commands for Kagi Search and Kagi Summarizer, plus an optional command for starting the same MCP server tools for Claude and other MCP clients.
+An Effect v4 application running on Bun, with an inlined Kagi session-token client. Use the CLI for Kagi Search and Kagi Summarizer, or start the MCP stdio server for Claude and other MCP clients.
 
 - **Search**: Fetch web results from Kagi Search
 - **Summarize**: Summarize URLs with Kagi Summarizer
@@ -260,35 +260,48 @@ Summarize content from URLs using the Kagi Summarizer API. Supports various docu
 - `url` (string): URL to summarize
 - `summary_type` (enum): `"keypoints"`, `"eli5"`, or `"article"`. Default: `"article"`
 - `summary_length` (enum, optional): Only used with `"article"`; one of `"headline"`, `"overview"`, `"digest"`, `"medium"`, or `"long"`
-- `target_language` (string, optional): Language code, e.g. `"EN"`
+- `target_language` (string, optional): Language code, e.g. `"EN"`. Defaults to `"EN"`.
 
 ## Development
 
-### Project Structure
+### Architecture
+
+`src/index.ts` runs the app with `BunRuntime.runMain`. `src/services.ts` composes the live layers:
 
 ```text
-tobira/
-├── src/
-│   ├── index.ts              # CLI entry point
-│   ├── cli/
-│   │   ├── help.ts           # CLI help text
-│   │   └── parser.ts         # CLI argument parser
-│   ├── mcp/
-│   │   └── server.ts         # MCP server startup
-│   ├── kagi/
-│   │   ├── http.ts           # Kagi HTTP helpers and response validation
-│   │   ├── search.ts         # Inlined Kagi search client/parser
-│   │   └── summarize.ts      # Inlined Kagi summarizer client/parser
-│   ├── tools/
-│   │   ├── search.ts         # Shared search runner and MCP wrapper
-│   │   └── summarizer.ts     # Shared summarizer runner and MCP wrapper
-│   └── utils/
-│       ├── auth.ts           # Session token resolution
-│       ├── formatting.ts     # Output/error formatting helpers
-│       └── timeout.ts        # Abortable timeout helper
-├── package.json
-└── README.md
+CLI / MCP → shared tool runners → Kagi → KagiHttp → Effect HttpClient
+                                           └── Auth → Config / FileSystem / Path
 ```
+
+| File | Responsibility |
+| --- | --- |
+| `src/domain.ts` | Schema codecs, optional values, summary styles, and tagged application actions |
+| `src/cli/parser.ts` | Effect CLI commands, flags, aliases, and generated help |
+| `src/mcp/server.ts` | Effect MCP stdio transport and Schema-derived tool definitions |
+| `src/kagi/client.ts` | Injectable Kagi search and summarization service |
+| `src/kagi/http.ts` | Authenticated HTTP requests, response validation, and challenge detection |
+| `src/kagi/search.ts` | Cheerio HTML boundary and search-page classification |
+| `src/kagi/summarize.ts` | Summary request encoding and NUL-delimited frame decoding |
+| `src/tools/` | Shared runners, concurrent searches, partial results, and timeouts |
+| `src/utils/` | Authentication, typed errors, formatting, and timeout composition |
+
+Domain values use `Option` for absence. `Data.TaggedEnum` models actions, summary sources and styles, parser events, and query outcomes. Expected failures extend `Data.TaggedError`. Schema codecs decode CLI, MCP, HTML, and summary inputs and encode outgoing request fields. Session tokens remain `Redacted` until the HTTP cookie boundary.
+
+Searches run with bounded `Effect.forEach` concurrency and preserve query order. Effect timeouts interrupt requests and run their finalizers. MCP uses the same runners, returns plain text, and marks operational failures with `isError: true`. Closing stdin shuts down the server cleanly.
+
+### Effect reference and tooling
+
+`effect` and `@effect/platform-bun` are pinned to `4.0.0-rc.115`. The existing `repos/effect/` Git subtree is a read-only upstream reference, not a runtime dependency. Start with `repos/effect/LLMS.md`, then inspect its examples and source. The subtree tracks an upstream `main` snapshot, so check the installed RC declarations when an API differs.
+
+To update the reference from a clean working tree:
+
+```bash
+git subtree pull --prefix=repos/effect https://github.com/Effect-TS/effect.git main --squash
+```
+
+`bun install` runs `effect-tsgo patch --oxlint`. `.oxlintrc.json` extends Effect's recommended preset, and `tsconfig.json` enables the language-service plugin with diagnostics delegated to Oxlint. Use the workspace TypeScript version in your editor.
+
+Type-checking and test discovery exclude `repos/`; `bun test` runs only this app's tests.
 
 ### Local Setup
 

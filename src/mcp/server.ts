@@ -1,59 +1,96 @@
-import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
-import { ResultAsync } from "neverthrow";
-
+import { Cause, Context, Deferred, Effect, Fiber, Layer, Schema, Stdio, Stream } from "effect";
+import { McpProtocol, McpSchema, McpServer, Tool } from "effect/unstable/ai";
 import pkg from "../../package.json";
-import { kagiSearchFetch, searchToolConfig } from "../tools/search.ts";
-import { kagiSummarizer, summarizerToolConfig } from "../tools/summarizer.ts";
-import { toUnexpectedError, type AppError } from "../utils/errors.ts";
+import { Kagi } from "../kagi/client.ts";
+import { runSearch, searchToolConfig } from "../tools/search.ts";
+import { runSummarizer, summarizerToolConfig } from "../tools/summarizer.ts";
+import { Auth } from "../utils/auth.ts";
+import { formatAppError, type AppError } from "../utils/errors.ts";
 
-const { version } = pkg;
+/** Use raw MCP registration to preserve plain text, rather than JSON-stringifying tool output. */
+const registerTool = Effect.fn("registerTool")(function* <A, I>(
+  config: {
+    readonly name: string;
+    readonly title: string;
+    readonly description: string;
+    readonly inputSchema: Schema.Codec<A, I>;
+  },
+  run: (input: A) => Effect.Effect<string, AppError, Kagi | Auth>,
+) {
+  const server = yield* McpServer.McpServer;
+  const services = yield* Effect.context<Kagi | Auth>();
+  const inputSchema = yield* Schema.decodeUnknownEffect(McpSchema.ToolJsonSchema)(
+    Tool.getJsonSchemaFromSchema(config.inputSchema),
+  ).pipe(Effect.orDie);
+  yield* server.addTool({
+    tool: new McpSchema.Tool({
+      name: config.name,
+      title: config.title,
+      description: config.description,
+      inputSchema,
+    }),
+    annotations: Context.empty(),
+    handle: (payload: unknown) =>
+      Schema.decodeUnknownEffect(config.inputSchema)(payload).pipe(
+        Effect.mapError((error) => new McpSchema.InvalidParams({ message: error.message })),
+        Effect.flatMap((input) =>
+          run(input).pipe(
+            Effect.match({
+              onFailure: (error) =>
+                new McpSchema.CallToolResult({
+                  isError: true,
+                  content: [{ type: "text", text: formatAppError(error) }],
+                }),
+              onSuccess: (text) =>
+                new McpSchema.CallToolResult({ content: [{ type: "text", text }] }),
+            }),
+          ),
+        ),
+        Effect.provideContext(services),
+      ),
+  });
+});
 
-export class TobiraMcpServer {
-  private server: McpServer;
+export const toolsLayer = Layer.effectDiscard(
+  Effect.gen(function* () {
+    yield* registerTool(searchToolConfig, runSearch);
+    yield* registerTool(summarizerToolConfig, runSummarizer);
+  }),
+);
 
-  constructor() {
-    this.server = new McpServer({
+export const serverLayer = toolsLayer.pipe(
+  Layer.provide(
+    McpServer.layerStdio({
       name: "tobira",
-      version,
-    });
-    this.setupTools();
-  }
+      version: pkg.version,
+      protocols: [
+        McpProtocol.v2025_11_25,
+        McpProtocol.v2025_06_18,
+        McpProtocol.v2025_03_26,
+        McpProtocol.v2024_11_05,
+      ],
+    }),
+  ),
+);
 
-  private setupTools() {
-    this.server.registerTool(
-      searchToolConfig.name,
-      {
-        title: "Kagi Search",
-        description: searchToolConfig.description,
-        inputSchema: searchToolConfig.inputSchema,
-      },
-      (args) => kagiSearchFetch(args as Parameters<typeof kagiSearchFetch>[0]),
-    );
-
-    this.server.registerTool(
-      summarizerToolConfig.name,
-      {
-        title: "Kagi Summarizer",
-        description: summarizerToolConfig.description,
-        inputSchema: summarizerToolConfig.inputSchema,
-      },
-      (args) => kagiSummarizer(args as Parameters<typeof kagiSummarizer>[0]),
-    );
-  }
-
-  start(): ResultAsync<void, AppError> {
-    return ResultAsync.fromPromise(
-      (async () => {
-        const transport = new StdioServerTransport();
-        await this.server.connect(transport);
-        console.error(`Tobira MCP Server v${version} started successfully`);
-      })(),
-      toUnexpectedError,
-    );
-  }
-}
-
-export function startMcpServer(): ResultAsync<void, AppError> {
-  return new TobiraMcpServer().start();
-}
+export const startMcpServer = Effect.gen(function* () {
+  const stdio = yield* Stdio.Stdio;
+  const ended = yield* Deferred.make<void>();
+  const transport = Stdio.make({
+    ...stdio,
+    stdin: stdio.stdin.pipe(Stream.onEnd(Deferred.succeed(ended, void 0))),
+  });
+  // Effect's stdio protocol interrupts its owning fiber at EOF. Keep that fiber
+  // separate so a client disconnect is a clean exit, not process exit code 130.
+  const server = yield* Effect.forkScoped(
+    Layer.launch(serverLayer).pipe(Effect.provideService(Stdio.Stdio, transport)),
+  );
+  yield* Effect.raceFirst(Fiber.join(server), Deferred.await(ended)).pipe(
+    Effect.catchCause((cause) =>
+      Effect.gen(function* () {
+        if (Cause.hasInterruptsOnly(cause) && (yield* Deferred.isDone(ended))) return;
+        return yield* Effect.failCause(cause);
+      }),
+    ),
+  );
+}).pipe(Effect.scoped);

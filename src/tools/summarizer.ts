@@ -1,93 +1,31 @@
-import type { Result } from "neverthrow";
-import { z } from "zod";
-
-import {
-  articleSummaryLengthSchema,
-  summarize,
-  summaryTypeSchema,
-  supportedLanguageSchema,
-  type ArticleSummaryLength,
-  type SummaryType,
-  type SupportedLanguage,
-} from "../kagi/summarize.ts";
-import { resolveToken } from "../utils/auth.ts";
-import { formatAppError, type AppError } from "../utils/errors.ts";
+import { Effect, Match, Option } from "effect";
+import { SummarizerInput, SummarySource, SummaryStyle } from "../domain.ts";
+import { Kagi } from "../kagi/client.ts";
 import { withTimeout } from "../utils/timeout.ts";
 
-const SUMMARY_TIMEOUT_MS = 60_000;
-
-export const summarizerInputSchema = {
-  url: z.string().url().describe("A URL to a document to summarize."),
-  summary_type: summaryTypeSchema
-    .default("article")
-    .describe(
-      "Type of summary to produce. Options are 'keypoints' for concise bullets, 'eli5' for a simplified explanation, and 'article' for a prose summary.",
-    ),
-  summary_length: articleSummaryLengthSchema
-    .optional()
-    .describe(
-      "Optional length for 'article' summaries. Options are 'headline', 'overview', 'digest', 'medium', and 'long'.",
-    ),
-  target_language: supportedLanguageSchema
-    .optional()
-    .describe(
-      "Desired output language using language codes (e.g., 'EN' for English). If not specified, the document's original language influences the output.",
-    ),
-};
-
-const textContent = (text: string) => ({
-  content: [{ type: "text" as const, text }],
-});
-
-export async function runSummarizer({
-  url,
-  summary_type,
-  summary_length,
-  target_language,
-}: {
-  url: string;
-  summary_type?: SummaryType;
-  summary_length?: ArticleSummaryLength;
-  target_language?: SupportedLanguage;
-}): Promise<Result<string, AppError>> {
-  return await resolveToken().asyncAndThen((token) =>
-    withTimeout(
-      (signal) =>
-        summarize(
-          url,
-          token,
-          {
-            type: summary_type,
-            summaryLength: summary_length,
-            language: target_language,
-            isUrl: true,
-          },
-          { signal },
-        ),
-      SUMMARY_TIMEOUT_MS,
-      "Summarizer timeout",
-    ).map((summary) => summary.data.output),
+export const runSummarizer = Effect.fn("runSummarizer")(function* (input: SummarizerInput) {
+  const kagi = yield* Kagi;
+  const style = Match.value(Option.getOrElse(input.summary_type, () => "article" as const)).pipe(
+    Match.when("article", () => SummaryStyle.Article({ length: input.summary_length })),
+    Match.when("keypoints", () => SummaryStyle.Keypoints()),
+    Match.when("eli5", () => SummaryStyle.Eli5()),
+    Match.exhaustive,
   );
-}
-
-/** MCP tool handler that summarizes a URL using Kagi's summarizer with configurable type and language. */
-export async function kagiSummarizer(args: {
-  url: string;
-  summary_type?: SummaryType;
-  summary_length?: ArticleSummaryLength;
-  target_language?: SupportedLanguage;
-}) {
-  const result = await runSummarizer(args);
-  return textContent(result.match((text) => text, formatAppError));
-}
+  return yield* withTimeout(
+    kagi.summarize({
+      source: SummarySource.Url({ input: input.url }),
+      style,
+      language: input.target_language,
+    }),
+    60_000,
+    "Summarizer timeout",
+  );
+});
 
 export const summarizerToolConfig = {
   name: "kagi_summarizer",
-  description: `
-    Summarize content from a URL using the Kagi.com Summarizer API. The Summarizer can summarize any
-    document type (text webpage, video, audio, etc.)
-    `
-    .replaceAll(/\s+/gs, " ")
-    .trim(),
-  inputSchema: summarizerInputSchema,
+  title: "Kagi Summarizer",
+  description:
+    "Summarize a URL with Kagi Summarizer. Supports webpages, video, audio, and other document types.",
+  inputSchema: SummarizerInput,
 };

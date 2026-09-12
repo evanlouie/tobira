@@ -1,76 +1,42 @@
-import { match, P } from "ts-pattern";
+import { Data, Inspectable, Option, Schema } from "effect";
+
+interface ErrorDetails {
+  readonly message: string;
+}
+
+/** Yieldable errors support Effect.catchTag and retain native Error stack traces. */
+export class AuthError extends Data.TaggedError("AuthError")<ErrorDetails> {}
+export class TokenFileError extends Data.TaggedError("TokenFileError")<ErrorDetails> {}
+export class ValidationError extends Data.TaggedError("ValidationError")<ErrorDetails> {}
+export class HttpError extends Data.TaggedError("HttpError")<
+  ErrorDetails & {
+    readonly status: Option.Option<number>;
+  }
+> {}
+export class RateLimitError extends Data.TaggedError("RateLimitError")<ErrorDetails> {}
+export class NetworkError extends Data.TaggedError("NetworkError")<ErrorDetails> {}
+export class TimeoutError extends Data.TaggedError("TimeoutError")<ErrorDetails> {}
+export class ParseError extends Data.TaggedError("ParseError")<ErrorDetails> {}
+export class KagiChallengeError extends Data.TaggedError("KagiChallengeError")<ErrorDetails> {}
 
 export type AppError =
-  | { type: "AuthError"; message: string; cause?: unknown }
-  | { type: "TokenFileError"; message: string; cause?: unknown }
-  | { type: "ValidationError"; message: string; cause?: unknown }
-  | { type: "HttpError"; message: string; status?: number; cause?: unknown }
-  | { type: "RateLimitError"; message: string; cause?: unknown }
-  | { type: "NetworkError"; message: string; cause?: unknown }
-  | { type: "TimeoutError"; message: string; cause?: unknown }
-  | { type: "ParseError"; message: string; cause?: unknown }
-  | { type: "KagiChallengeError"; message: string; cause?: unknown }
-  | { type: "UnexpectedError"; message: string; cause?: unknown };
+  | AuthError
+  | TokenFileError
+  | ValidationError
+  | HttpError
+  | RateLimitError
+  | NetworkError
+  | TimeoutError
+  | ParseError
+  | KagiChallengeError;
 
-/** Type guard that checks if an error is an ErrnoException-style error (has a `code` property). */
-export function isErrnoException(error: unknown): error is NodeJS.ErrnoException {
-  return match(error)
-    .when(
-      (error): error is NodeJS.ErrnoException => error instanceof Error && "code" in error,
-      () => true,
-    )
-    .otherwise(() => false);
-}
+const Message = Schema.Struct({ message: Schema.OptionFromOptionalNullOr(Schema.Unknown) });
 
-const stringifyObject = (value: unknown): string => {
-  try {
-    return JSON.stringify(value) ?? Object.prototype.toString.call(value);
-  } catch {
-    return Object.prototype.toString.call(value);
-  }
-};
+export const errorMessage = (error: unknown): string =>
+  Schema.decodeUnknownOption(Message)(error).pipe(
+    Option.flatMap(({ message }) => message),
+    Option.getOrElse(() => error),
+    Inspectable.toStringUnknown,
+  );
 
-const stringifyUnknown = (value: unknown): string =>
-  match(value)
-    .with(P.string, (value) => value)
-    .with(P.number, (value) => `${value}`)
-    .with(P.boolean, (value) => `${value}`)
-    .with(P.bigint, (value) => `${value}`)
-    .when(
-      (value): value is symbol => typeof value === "symbol",
-      (value) => value.description ?? value.toString(),
-    )
-    .otherwise(stringifyObject);
-
-/** Extracts a message string from an unknown error, falling back to a stringified unknown value. */
-export function errorMessage(error: unknown): string {
-  return match(error)
-    .with(P.instanceOf(Error), ({ message }) => message)
-    .with({ message: P.select(P.string) }, (message) => message)
-    .with(
-      { message: P.select(P.when((message) => message !== undefined && message !== null)) },
-      stringifyUnknown,
-    )
-    .otherwise(stringifyUnknown);
-}
-
-/** Converts an unknown error into a typed unexpected error. */
-export function toUnexpectedError(error: unknown): AppError {
-  return {
-    type: "UnexpectedError",
-    message: errorMessage(error) || "Unknown error occurred",
-    cause: error,
-  };
-}
-
-/** Formats a typed application error into a user-facing "Error: ..." string. */
-export function formatAppError(error: AppError): string {
-  return match(error.message)
-    .with(P.string.minLength(1), (message) => `Error: ${message}`)
-    .otherwise(() => "Error: Unknown error occurred");
-}
-
-/** Formats an unknown error into a user-facing "Error: ..." string. */
-export function formatUnknownError(error: unknown): string {
-  return formatAppError(toUnexpectedError(error));
-}
+export const formatAppError = (error: AppError): string => `Error: ${error.message}`;

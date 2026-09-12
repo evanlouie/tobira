@@ -1,86 +1,68 @@
-/// <reference types="bun-types" />
-
 import { beforeAll, describe, expect, test } from "bun:test";
+import { Array, Effect, Option, Result, String } from "effect";
+import { ARTICLE_SUMMARY_LENGTHS, SummarySource, SummaryStyle } from "../../src/domain.ts";
+import { Kagi } from "../../src/kagi/client.ts";
+import { KagiLive } from "../../src/services.ts";
+import { withTimeout } from "../../src/utils/timeout.ts";
 
-import { search } from "../../src/kagi/search.ts";
-import { ARTICLE_SUMMARY_LENGTHS, SUMMARY_TYPES, summarize } from "../../src/kagi/summarize.ts";
-import { resolveToken } from "../../src/utils/auth.ts";
-import type { AppError } from "../../src/utils/errors.ts";
-
-const SEARCH_QUERY = "site:bun.sh Bun runtime";
-
-function getToken(): string | null {
-  const result = resolveToken();
-  return result.isOk() ? result.value : null;
-}
-
-function isRateLimitError(error: AppError): boolean {
-  return error.type === "RateLimitError" || /rate limit|HTTP 429/i.test(error.message);
-}
-
-const shouldRunIntegration = process.env.KAGI_INTEGRATION === "1";
-const token = shouldRunIntegration ? getToken() : null;
-const integrationDescribe = token === null ? describe.skip : describe;
-
-integrationDescribe("Kagi search and summarize integration", () => {
-  let firstResultUrl = "";
+describe.skipIf(process.env.KAGI_INTEGRATION !== "1")("live Kagi search and summarize", () => {
+  let firstUrl = Option.none<string>();
   let rateLimited = false;
 
   beforeAll(async () => {
-    const result = await search(SEARCH_QUERY, token!, 1);
-    if (result.isErr()) {
-      if (!isRateLimitError(result.error)) {
-        throw new Error(result.error.message);
-      }
+    const result = await Effect.runPromise(
+      Effect.flatMap(Kagi, (kagi) =>
+        withTimeout(kagi.search("site:bun.sh Bun runtime", 1), 30_000, "Search timeout"),
+      ).pipe(Effect.result, Effect.provide(KagiLive)),
+    );
+    if (Result.isFailure(result)) {
+      if (result.failure._tag !== "RateLimitError") throw new Error(result.failure.message);
       rateLimited = true;
-      console.warn("Skipping live Kagi integration assertions because Kagi returned a rate limit.");
+      console.warn("Kagi rate limited the integration test; skipping remaining requests.");
       return;
     }
+    firstUrl = Array.head(result.success.data).pipe(Option.map(({ url }) => url));
+    expect(Option.isSome(firstUrl)).toBe(true);
+  }, 35_000);
 
-    expect(result.value.data.length).toBeGreaterThan(0);
-    firstResultUrl = result.value.data[0]!.url;
-    expect(firstResultUrl).toMatch(/^https?:\/\//);
-  }, 30_000);
-
-  async function expectSummaryOutput(options: Parameters<typeof summarize>[2]) {
-    if (rateLimited) return;
-
-    const result = await summarize(firstResultUrl, token!, options);
-    if (result.isErr()) {
-      if (!isRateLimitError(result.error)) {
-        throw new Error(result.error.message);
+  const styles = [
+    SummaryStyle.Keypoints(),
+    SummaryStyle.Eli5(),
+    SummaryStyle.Article({ length: Option.none() }),
+    ...Array.map(ARTICLE_SUMMARY_LENGTHS, (length) =>
+      SummaryStyle.Article({ length: Option.some(length) }),
+    ),
+  ];
+  for (const style of styles) {
+    const name = SummaryStyle.$match(style, {
+      Keypoints: () => "keypoints",
+      Eli5: () => "eli5",
+      Article: ({ length }) => `article:${Option.getOrElse(length, () => "default")}`,
+    });
+    test(`summarizes as ${name}`, async () => {
+      if (rateLimited) return;
+      const result = await Effect.runPromise(
+        Effect.gen(function* () {
+          const input = yield* Effect.fromOption(firstUrl).pipe(Effect.orDie);
+          const kagi = yield* Kagi;
+          return yield* withTimeout(
+            kagi.summarize({
+              source: SummarySource.Url({ input }),
+              style,
+              language: Option.none(),
+            }),
+            60_000,
+            "Summary timeout",
+          );
+        }).pipe(Effect.result, Effect.provide(KagiLive)),
+      );
+      if (Result.isFailure(result)) {
+        if (result.failure._tag !== "RateLimitError") throw new Error(result.failure.message);
+        rateLimited = true;
+        console.warn("Kagi rate limited the integration test; skipping remaining requests.");
+        return;
       }
-      rateLimited = true;
-      console.warn("Skipping remaining live Kagi integration assertions because Kagi returned a rate limit.");
-      return;
-    }
-
-    expect(result.value.data.output.trim().length).toBeGreaterThan(0);
-  }
-
-  for (const summaryType of SUMMARY_TYPES) {
-    test(`summarizes the first search result as ${summaryType}`, async () => {
-      await expectSummaryOutput({
-        type: summaryType,
-        isUrl: true,
-      });
-    }, 30_000);
-  }
-
-  for (const summaryLength of ARTICLE_SUMMARY_LENGTHS) {
-    test(`summarizes the first search result as article:${summaryLength}`, async () => {
-      await expectSummaryOutput({
-        type: "article",
-        summaryLength,
-        isUrl: true,
-      });
-    }, 30_000);
+      expect(String.isNonEmpty(String.trim(result.success))).toBe(true);
+    }, 65_000);
   }
 });
-
-if (token === null) {
-  test.skip(
-    "Kagi integration tests require KAGI_INTEGRATION=1 and KAGI_SESSION_TOKEN or ~/.kagi_session_token",
-    () => {},
-  );
-}

@@ -1,106 +1,66 @@
 # AGENTS.md
 
-This file provides guidance to LLM agents when working with code in this repository.
-
-## Common Commands
-
-### Development
+## Commands
 
 ```bash
-bun install        # Install dependencies
-bun run start      # Show CLI help
-bun run dev        # Show CLI help with Bun inspector
-bun run typecheck  # Type-check with tsc
-bun run lint       # Lint with oxlint
-bun run fmt        # Format with oxfmt
+bun install                  # Install dependencies and patch TypeScript/Oxlint for Effect
+bun run start                # Show CLI help
+bun run dev                  # Show CLI help with the Bun inspector
+bun run typecheck            # Check application and test types
+bun run lint                 # Type-aware Oxlint with Effect's recommended rules
+bun run fmt                  # Format application and tests
+bun test                     # Offline tests; live integrations skip by default
+bun run test:integration      # Live Kagi tests; requires a session token
+bunx @modelcontextprotocol/inspector bun src/index.ts mcp
 ```
 
-### Testing & Debugging
+## Effect conventions
 
-```bash
-bun test                                                  # Run unit tests; live integrations skip by default
-bun run test:integration                                  # Run live Kagi integration tests with KAGI_INTEGRATION=1
-bunx @modelcontextprotocol/inspector bun src/index.ts mcp # Launch MCP Inspector at localhost:5173
-```
+This is an Effect v4 application running on Bun. `effect` and `@effect/platform-bun` are pinned to `4.0.0-rc.115`.
 
-## Architecture Overview
+Read `repos/effect/LLMS.md` before changing Effect code. The existing Git subtree under `repos/effect/` is a read-only reference. Inspect its examples and source, but check the installed RC declarations when the upstream snapshot differs. Runtime imports must come from installed packages, never from `repos/`.
 
-This is a **CLI-first Kagi session-token client** with an optional Model Context Protocol (MCP) server mode. The CLI exposes direct search/summarize commands and can start an MCP stdio server for Claude Desktop/Code. It uses session tokens (not API keys) with an inlined Kagi client under `src/kagi/`. Use Bun as the runtime.
+- Use Effect for control flow, concurrency, cancellation, and resource management. Define reusable operations with `Effect.fn` and use `Effect.gen` for inline programs.
+- Define services with `Context.Service` and inject implementations through layers. Compose live services in `src/services.ts`.
+- Use `Option` for absent domain values. Decode and encode external data with `Schema`. Nullable values belong only at external library or serialization boundaries.
+- Use `Data.TaggedEnum` for domain variants and actions, with exhaustive `$match` dispatch. Errors extend `Data.TaggedError`, not `Data.TaggedEnum`.
+- Prefer Effect's standard-library modules over native JavaScript collection, configuration, timing, and filesystem APIs. Cheerio remains the HTML parsing boundary.
 
-### Core Architecture Pattern
+## Architecture
 
-**CLI Structure**: The main entry point (`src/index.ts`) parses CLI commands. The `mcp` command starts the MCP server from `src/mcp/server.ts`, which uses the `@modelcontextprotocol/sdk` and stdio transport.
+The CLI and MCP adapters call shared Effect runners. No separate MCP SDK, Zod, neverthrow, or ts-pattern dependency is needed.
 
-**Tool-Based Architecture**: Each capability has a shared plain-text runner plus an MCP wrapper:
+| File | Responsibility |
+| --- | --- |
+| `src/index.ts` | Bun runtime entry point, action dispatch, exit codes, and stderr diagnostics |
+| `src/domain.ts` | Schema codecs and tagged actions, summary styles, and sources |
+| `src/services.ts` | Live Auth, HTTP, Kagi, and Bun layer composition |
+| `src/cli/parser.ts` | Effect CLI commands, typed flags, aliases, and generated help |
+| `src/mcp/server.ts` | Effect MCP stdio server and Schema-derived tool registration |
+| `src/kagi/client.ts` | Injectable Kagi search and summarization service |
+| `src/kagi/http.ts` | Authenticated Effect HttpClient calls and response validation |
+| `src/kagi/search.ts` | Cheerio search-page parser |
+| `src/kagi/summarize.ts` | Outgoing summary encoding and NUL-delimited frame parser |
+| `src/tools/` | Shared runners with ordered concurrent search and timeouts |
+| `src/utils/` | Authentication, error classes, formatting, and timeout composition |
 
-- `runSearch` / `kagi_search_fetch` - Multi-query concurrent search
-- `runSummarizer` / `kagi_summarizer` - URL summarization
+## Behavior to preserve
 
-**Token Resolution System**: Authentication follows the same pattern as `kagi-ken-cli` with priority-based token resolution:
+Authentication resolves per operation, in this order:
 
-1. `KAGI_SESSION_TOKEN` environment variable
-2. `~/.kagi_session_token` file
+1. A non-empty `KAGI_SESSION_TOKEN` environment value.
+2. A non-empty `~/.kagi_session_token` file.
 
-### Key Components
+Tokens remain `Redacted` until constructing the Kagi cookie. Do not include tokens or authenticated request objects in diagnostics.
 
-**`src/index.ts`** - CLI entry point that:
+Search accepts one to ten queries and limits results to between 1 and 50 per query. `Effect.forEach` runs queries concurrently while preserving input order and partial failures. Result numbers continue across queries. Search timeouts are 10 seconds per query; summary timeouts are 60 seconds. Both interrupt the underlying HTTP request.
 
-- Parses `search`, `summarize`, and `mcp` commands
-- Dispatches to shared tool runners
-- Prints CLI output/errors and sets exit codes
+Summary frames are snapshots, not deltas. Keep the latest non-empty output even if metadata follows it. Explicit Kagi error frames take precedence over output. Article length is invalid for keypoints or eli5 summaries.
 
-**`src/tools/`** - Shared tool implementations:
+MCP exposes `kagi_search_fetch` and `kagi_summarizer`. Generate its input JSON Schema from the same codecs used for validation. Return plain-text content, not JSON-quoted strings. Operational failures set `isError: true`. Keep stdout reserved for protocol messages. Stdin EOF shuts the server down cleanly.
 
-- Each tool exports a plain-text runner for the CLI, an MCP handler wrapper, and a config object
-- MCP handlers return MCP-compliant response format with `content` array
-- Input validation uses direct Zod schema objects (not `z.object()`) for MCP input schemas
+## Tests and tooling
 
-**`src/kagi/`** - Inlined Kagi HTTP client:
+`bunfig.toml` limits test discovery to `tests/`. `tsconfig.json` excludes the vendored subtree. Offline tests inject ConfigProvider, FileSystem, HttpClient, Kagi, and Stdio services rather than changing global state. Use TestClock for deterministic timeout tests.
 
-- `http.ts` - Request handling, response validation, auth/challenge detection
-- `search.ts` - Search client and HTML parser
-- `summarize.ts` - Summarizer client and streaming response parser
-
-**`src/utils/auth.ts`** - Token resolution that mirrors `kagi-ken-cli`:
-
-- `resolveToken()` - Priority-based token resolution
-- `readTokenFromFile()` - File-based token reading
-- Comprehensive error messages for missing tokens
-
-**`src/utils/formatting.ts`** - Result formatting:
-
-- `formatSearchResults()` - Matches official Kagi MCP output format
-- Results with `t === 1` (related searches) are filtered out; only `t === 0` (actual results) are included
-
-### Critical Implementation Details
-
-**MCP Schema Format**: Input schemas must be plain objects with Zod validators as values, NOT `z.object()` wrappers:
-
-```js
-// Correct
-export const schema = {
-  queries: z.array(z.string()).min(1),
-};
-
-// Incorrect
-export const schema = z.object({
-  queries: z.array(z.string()).min(1),
-});
-```
-
-**Concurrent Search Processing**: Search tool runs multiple queries concurrently with individual timeouts, maintaining result order and partial success handling.
-
-**Result Formatting Compatibility**: Output format precisely matches the official Python Kagi MCP server to ensure tool interface compatibility across implementations.
-
-## Dependencies
-
-- Use Bun as the runtime
-- ES modules (`"type": "module"` in `package.json`)
-- `@modelcontextprotocol/sdk` - MCP server implementation
-- `cheerio` - Kagi search HTML parsing
-- `neverthrow` - Typed result/error flow
-- `zod` - Input validation schemas
-
-## Configuration
-
-Requires Kagi session token via environment variable or file. The CLI and MCP mode automatically detect the token source and provide clear error messages for setup issues.
+`bun install` runs `effect-tsgo patch --oxlint`. `.oxlintrc.json` extends the recommended Effect preset. The TypeScript language-service plugin delegates diagnostics to Oxlint to avoid duplicates. Use the workspace TypeScript version in the editor.

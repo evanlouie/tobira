@@ -1,15 +1,21 @@
-import { readFileSync } from "fs";
-import { homedir } from "os";
-import { join } from "path";
-import { err, ok, type Result } from "neverthrow";
-import { match, P } from "ts-pattern";
+import {
+  Config,
+  ConfigProvider,
+  Context,
+  Effect,
+  FileSystem,
+  Layer,
+  Option,
+  Path,
+  Redacted,
+  Schema,
+} from "effect";
+import { NonEmptyText } from "../domain.ts";
+import { AuthError, TokenFileError, type AppError } from "./errors.ts";
 
-import { errorMessage, isErrnoException, type AppError } from "./errors.ts";
-
-const tokenPath = () => join(homedir(), ".kagi_session_token");
-
-const missingTokenError = (): AppError => ({
-  type: "AuthError",
+const Token = Schema.RedactedFromValue(NonEmptyText);
+const decodeToken = Schema.decodeUnknownOption(Token);
+const missingToken = new AuthError({
   message:
     "No valid Kagi session token found. Please either:\n" +
     "1. Set KAGI_SESSION_TOKEN environment variable, or\n" +
@@ -17,39 +23,46 @@ const missingTokenError = (): AppError => ({
     "Get your token from: https://kagi.com/settings?p=api",
 });
 
-function readTokenFromFile(): Result<string | null, AppError> {
-  try {
-    const token = readFileSync(tokenPath(), "utf8").trim();
-    return ok(
-      match(token)
-        .with("", () => null)
-        .otherwise((token) => token),
-    );
-  } catch (error: unknown) {
-    return match(error)
-      .when(
-        (error) => isErrnoException(error) && error.code === "ENOENT",
-        () => ok(null),
-      )
-      .otherwise((cause) =>
-        err({
-          type: "TokenFileError",
-          message: `Failed to read token file: ${errorMessage(cause)}`,
-          cause,
-        }),
-      );
+export class Auth extends Context.Service<
+  Auth,
+  {
+    readonly token: Effect.Effect<Redacted.Redacted<string>, AppError>;
   }
+>()("tobira/Auth") {
+  static readonly layer = Layer.effect(
+    Auth,
+    Effect.gen(function* () {
+      const provider = yield* ConfigProvider.ConfigProvider;
+      const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      // Resolve per operation so replacing an expired token does not require restarting MCP.
+      const token = Effect.gen(function* () {
+        const env = yield* Config.option(Config.String("KAGI_SESSION_TOKEN"));
+        const fromEnv = Option.flatMap(env, decodeToken);
+        if (Option.isSome(fromEnv)) return fromEnv.value;
+
+        const home = yield* Config.String("HOME").pipe(
+          Config.orElse(() => Config.String("USERPROFILE")),
+        );
+        const contents = yield* fs.readFileString(path.join(home, ".kagi_session_token")).pipe(
+          Effect.asSome,
+          Effect.catchReason("PlatformError", "NotFound", () =>
+            Effect.succeed(Option.none<string>()),
+          ),
+          Effect.mapError(
+            () => new TokenFileError({ message: "Failed to read ~/.kagi_session_token" }),
+          ),
+        );
+        return yield* Effect.fromOption(Option.flatMap(contents, decodeToken)).pipe(
+          Effect.mapError(() => missingToken),
+        );
+      }).pipe(
+        Effect.catchTag("ConfigError", () => Effect.fail(missingToken)),
+        Effect.provideService(ConfigProvider.ConfigProvider, provider),
+      );
+      return Auth.of({ token });
+    }),
+  );
 }
 
-/** Resolves the Kagi session token from `KAGI_SESSION_TOKEN` env var or `~/.kagi_session_token` file. */
-export function resolveToken(): Result<string, AppError> {
-  return match(process.env.KAGI_SESSION_TOKEN?.trim())
-    .with(P.string.minLength(1), (token) => ok(token))
-    .otherwise(() =>
-      readTokenFromFile().andThen((fileToken) =>
-        match(fileToken)
-          .with(P.string.minLength(1), (token) => ok(token))
-          .otherwise(() => err(missingTokenError())),
-      ),
-    );
-}
+export const resolveToken = Effect.flatMap(Auth, ({ token }) => token);

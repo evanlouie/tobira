@@ -1,136 +1,64 @@
-import { err, ok, ResultAsync, type Result } from "neverthrow";
-import { match } from "ts-pattern";
-import { z } from "zod";
-
-import { search, type SearchResponse } from "../kagi/search.ts";
+import { Array, Data, Effect, Option } from "effect";
+import { SearchInput, type SearchResponse } from "../domain.ts";
+import { Kagi } from "../kagi/client.ts";
 import { resolveToken } from "../utils/auth.ts";
-import { errorMessage, formatAppError, type AppError } from "../utils/errors.ts";
+import type { AppError } from "../utils/errors.ts";
 import { formatSearchResults } from "../utils/formatting.ts";
 import { withTimeout } from "../utils/timeout.ts";
 
-const SEARCH_TIMEOUT_MS = 10_000;
-const MAX_QUERIES = 10;
+export type QueryOutcome = Data.TaggedEnum<{
+  Succeeded: { readonly query: string; readonly response: SearchResponse };
+  Failed: { readonly query: string; readonly error: AppError };
+}>;
+export const QueryOutcome = Data.taggedEnum<QueryOutcome>();
 
-export const searchInputSchema = {
-  queries: z
-    .array(z.string().trim().min(1))
-    .min(1)
-    .max(MAX_QUERIES)
-    .describe(
-      "One to ten concise, keyword-focused search queries. Include essential context within each query for standalone use.",
-    ),
-  limit: z
-    .number()
-    .int()
-    .min(1)
-    .max(50)
-    .optional()
-    .describe("Maximum number of search results per query (default: 10, max: 50)"),
-};
-
-const textContent = (text: string) => ({
-  content: [{ type: "text" as const, text }],
-});
-
-function normalizeQueries(queries: string[]): Result<string[], AppError> {
-  const normalizedQueries = queries.map((query) => query.trim());
-
-  return match(normalizedQueries)
-    .when(
-      (queries) => queries.length === 0 || queries.some((query) => query === ""),
-      () =>
-        err({
-          type: "ValidationError" as const,
-          message: "At least one non-empty search query is required",
-        }),
-    )
-    .when(
-      (queries) => queries.length > MAX_QUERIES,
-      () =>
-        err({
-          type: "ValidationError" as const,
-          message: `At most ${MAX_QUERIES} search queries are allowed`,
-        }),
-    )
-    .otherwise((queries) => ok(queries));
-}
-
-function searchAll({
-  token,
-  queries,
-  limit,
-}: {
-  token: string;
-  queries: string[];
-  limit: number;
-}): ResultAsync<string, AppError> {
-  return new ResultAsync(
-    (async () => {
-      const results = await Promise.all(
-        queries.map((query) =>
-          withTimeout(
-            (signal) => search(query, token, limit, { signal }),
-            SEARCH_TIMEOUT_MS,
-            "Search timeout",
-          ),
+export const runSearch = Effect.fn("runSearch")(function* (input: SearchInput) {
+  yield* resolveToken;
+  const kagi = yield* Kagi;
+  const outcomes = yield* Effect.forEach(
+    input.queries,
+    (query) =>
+      withTimeout(
+        kagi.search(
+          query,
+          Option.getOrElse(input.limit, () => 10),
         ),
-      );
-
-      const { responses, errors } = results.reduce(
-        (acc, result, index) =>
-          result.match(
-            (response) => {
-              acc.responses.push(response);
-              return acc;
-            },
-            (error) => {
-              acc.responses.push({ data: [] });
-              acc.errors.push(`Query "${queries[index] ?? ""}": ${errorMessage(error)}`);
-              return acc;
-            },
-          ),
-        { responses: [] as SearchResponse[], errors: [] as string[] },
-      );
-
-      return ok(
-        match(errors.length)
-          .with(0, () => formatSearchResults(queries, responses))
-          .otherwise(
-            () =>
-              `${formatSearchResults(queries, responses)}\n\nErrors encountered:\n${errors.join("\n")}`,
-          ),
-      );
-    })(),
+        10_000,
+        "Search timeout",
+      ).pipe(
+        Effect.match({
+          onSuccess: (response) => QueryOutcome.Succeeded({ query, response }),
+          onFailure: (error) => QueryOutcome.Failed({ query, error }),
+        }),
+      ),
+    { concurrency: 10 },
   );
-}
-
-export async function runSearch({
-  queries,
-  limit = 10,
-}: {
-  queries: string[];
-  limit?: number;
-}): Promise<Result<string, AppError>> {
-  return await resolveToken()
-    .andThen((token) => normalizeQueries(queries).map((queries) => ({ token, queries, limit })))
-    .asyncAndThen(searchAll);
-}
-
-/** MCP tool handler that runs concurrent Kagi searches with per-query timeouts and returns formatted results. */
-export async function kagiSearchFetch(args: { queries: string[]; limit?: number }) {
-  const result = await runSearch(args);
-  return textContent(result.match((text) => text, formatAppError));
-}
+  const responses = Array.map(
+    outcomes,
+    QueryOutcome.$match({
+      Succeeded: ({ response }) => response,
+      Failed: () => ({ data: [] }),
+    }),
+  );
+  const errors = Array.getSomes(
+    Array.map(
+      outcomes,
+      QueryOutcome.$match({
+        Succeeded: () => Option.none<string>(),
+        Failed: ({ query, error }) => Option.some(`Query "${query}": ${error.message}`),
+      }),
+    ),
+  );
+  const text = formatSearchResults(input.queries, responses);
+  return Array.isArrayEmpty(errors)
+    ? text
+    : `${text}\n\nErrors encountered:\n${Array.join(errors, "\n")}`;
+});
 
 export const searchToolConfig = {
   name: "kagi_search_fetch",
-  description: `
-    Fetch web results based on one or more queries using the Kagi.com web search engine. Use for
-    general search and when the user explicitly tells you to 'fetch' results/information. Results are
-    from all queries given. They are numbered continuously, so that a user may be able to refer to a
-    result by a specific number. Supports optional limit parameter to control results per query.
-    `
-    .replaceAll(/\s+/gs, " ")
-    .trim(),
-  inputSchema: searchInputSchema,
+  title: "Kagi Search",
+  description:
+    "Fetch web results from Kagi for one to ten queries. Results are numbered continuously across queries. Supports an optional per-query result limit.",
+  inputSchema: SearchInput,
 };

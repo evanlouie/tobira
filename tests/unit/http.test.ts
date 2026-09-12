@@ -1,94 +1,100 @@
 import { describe, expect, test } from "bun:test";
-
+import { Deferred, Effect, Fiber, Layer, Option, Redacted } from "effect";
+import {
+  FetchHttpClient,
+  HttpClient,
+  HttpClientRequest,
+  HttpClientResponse,
+} from "effect/unstable/http";
+import { TestClock } from "effect/testing";
 import {
   checkNotAuthOrChallengeResponse,
   checkResponseStatus,
   isAuthOrChallengeBody,
   isAuthOrChallengeUrl,
   isHtmlDocument,
-  safeFetch,
+  KagiHttp,
 } from "../../src/kagi/http.ts";
+import { Auth } from "../../src/utils/auth.ts";
+import { withTimeout } from "../../src/utils/timeout.ts";
+import { httpTest } from "../helpers.ts";
 
-function responseWithUrl(url: string, body = ""): Response {
-  const response = new Response(body, { status: 200 });
-  Object.defineProperty(response, "url", { value: url });
-  return response;
-}
-
-describe("Kagi HTTP response helpers", () => {
-  test("maps auth status codes to session token error", () => {
-    const unauthorized = checkResponseStatus(new Response("", { status: 401 }));
-    expect(unauthorized.isErr()).toBe(true);
-    expect(unauthorized._unsafeUnwrapErr()).toMatchObject({
-      type: "AuthError",
-      message: "Invalid or expired session token",
-    });
-
-    const forbidden = checkResponseStatus(new Response("", { status: 403 }));
-    expect(forbidden.isErr()).toBe(true);
-    expect(forbidden._unsafeUnwrapErr()).toMatchObject({
-      type: "AuthError",
-      message: "Invalid or expired session token",
-    });
+describe("Kagi HTTP", () => {
+  test.each([
+    [401, "AuthError"],
+    [403, "AuthError"],
+    [429, "RateLimitError"],
+    [500, "HttpError"],
+  ])("maps HTTP %i to %s", (status, tag) => {
+    expect(Effect.runSync(Effect.flip(checkResponseStatus(status)))).toMatchObject({ _tag: tag });
   });
 
-  test("detects auth and challenge URLs", () => {
-    expect(isAuthOrChallengeUrl("https://kagi.com/turnstile?r=/html/search%3Fq%3Dtest")).toBe(
-      true,
-    );
+  test("detects challenge URLs and bodies", () => {
+    expect(isAuthOrChallengeUrl("https://kagi.com/turnstile?r=/html/search%3Fq%3Dtest")).toBe(true);
     expect(isAuthOrChallengeUrl("https://kagi.com/login")).toBe(true);
-    expect(isAuthOrChallengeUrl("https://kagi.com/html/search?q=test")).toBe(false);
-  });
-
-  test("detects auth and challenge bodies", () => {
+    expect(isAuthOrChallengeUrl("https://kagi.com/html/search?q=login")).toBe(false);
     expect(isAuthOrChallengeBody('<div class="cf-turnstile"></div>')).toBe(true);
     expect(isAuthOrChallengeBody("Sign in to Kagi to continue")).toBe(true);
     expect(isAuthOrChallengeBody("ordinary search response")).toBe(false);
-  });
-
-  test("returns clear error for successful challenge response", () => {
-    const challengeUrl = checkNotAuthOrChallengeResponse(responseWithUrl("https://kagi.com/turnstile"));
-    expect(challengeUrl.isErr()).toBe(true);
-    expect(challengeUrl._unsafeUnwrapErr()).toMatchObject({
-      type: "KagiChallengeError",
-      message: expect.stringContaining("Kagi requires additional browser verification"),
-    });
-
-    const challengeBody = checkNotAuthOrChallengeResponse(
-      responseWithUrl("https://kagi.com/html/search"),
-      "turnstile",
-    );
-    expect(challengeBody.isErr()).toBe(true);
-    expect(challengeBody._unsafeUnwrapErr()).toMatchObject({
-      type: "KagiChallengeError",
-      message: expect.stringContaining("Kagi requires additional browser verification"),
-    });
-  });
-
-  test("short-circuits challenge URLs before inspecting response body", () => {
-    const body = {
-      toLowerCase() {
-        throw new Error("body should not be inspected");
-      },
-    } as unknown as string;
-
-    const result = checkNotAuthOrChallengeResponse(responseWithUrl("https://kagi.com/turnstile"), body);
-
-    expect(result.isErr()).toBe(true);
-    expect(result._unsafeUnwrapErr()).toMatchObject({ type: "KagiChallengeError" });
-  });
-
-  test("detects HTML documents", () => {
     expect(isHtmlDocument("<!DOCTYPE html><html></html>")).toBe(true);
     expect(isHtmlDocument('{"state":"done"}')).toBe(false);
   });
 
-  test("safeFetch maps synchronous fetch throws to Err", async () => {
-    const result = await safeFetch("https://example.com", {
-      headers: { Cookie: "invalid\nheader" },
-    });
+  test("detects successful challenge responses", () => {
+    for (const [url, body] of [
+      ["https://kagi.com/turnstile", Option.none<string>()],
+      ["https://kagi.com/html/search", Option.some("turnstile")],
+    ] as const) {
+      expect(Effect.runSync(Effect.flip(checkNotAuthOrChallengeResponse(url, body)))).toMatchObject(
+        { _tag: "KagiChallengeError" },
+      );
+    }
+  });
 
-    expect(result.isErr()).toBe(true);
-    expect(result._unsafeUnwrapErr()).toMatchObject({ type: "UnexpectedError" });
+  test("sets authentication headers and reads successful bodies", async () => {
+    const client = HttpClient.make((request) => {
+      expect(request.headers.cookie).toBe("kagi_session=test-token");
+      expect(request.headers["user-agent"]).toContain("Safari");
+      return Effect.succeed(HttpClientResponse.fromWeb(request, new Response("body")));
+    });
+    const program = Effect.flatMap(KagiHttp, (http) =>
+      http.text(HttpClientRequest.get("https://kagi.com/test")),
+    );
+    expect(await Effect.runPromise(program.pipe(Effect.provide(httpTest(client))))).toBe("body");
+  });
+
+  test("maps synchronous fetch failures without leaking the token", async () => {
+    const layer = KagiHttp.layer.pipe(
+      Layer.provide(FetchHttpClient.layer),
+      Layer.provide(
+        Layer.succeed(Auth, { token: Effect.succeed(Redacted.make("secret\ninvalid-header")) }),
+      ),
+    );
+    const error = await Effect.runPromise(
+      Effect.flatMap(KagiHttp, (http) =>
+        http.text(HttpClientRequest.get("https://kagi.com/test")),
+      ).pipe(Effect.flip, Effect.provide(layer)),
+    );
+    expect(error._tag).toBe("NetworkError");
+    expect(error.message).not.toContain("secret");
+  });
+
+  test("aborts the HttpClient signal on timeout", async () => {
+    await Effect.runPromise(
+      Effect.gen(function* () {
+        const started = yield* Deferred.make<AbortSignal>();
+        const client = HttpClient.make((_request, _url, signal) =>
+          Deferred.succeed(started, signal).pipe(Effect.andThen(Effect.never)),
+        );
+        const request = Effect.flatMap(KagiHttp, (http) =>
+          http.text(HttpClientRequest.get("https://kagi.com/test")),
+        ).pipe(Effect.provide(httpTest(client)));
+        const fiber = yield* Effect.forkChild(Effect.flip(withTimeout(request, 10, "timeout")));
+        const signal = yield* Deferred.await(started);
+        yield* TestClock.adjust(10);
+        expect(yield* Fiber.join(fiber)).toMatchObject({ _tag: "TimeoutError" });
+        expect(signal.aborted).toBe(true);
+      }).pipe(Effect.provide(TestClock.layer())),
+    );
   });
 });
