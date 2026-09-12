@@ -1,6 +1,6 @@
 #!/usr/bin/env bun
 import { BunRuntime } from "@effect/platform-bun";
-import { Cause, Console, Effect, Layer, Logger } from "effect";
+import { Boolean, Cause, Console, Effect, Layer, Logger, Match, Option } from "effect";
 import { Command } from "effect/unstable/cli";
 import pkg from "../package.json";
 import { makeCli } from "./cli/parser.ts";
@@ -10,6 +10,11 @@ import { AppLive } from "./services.ts";
 import { runSearch } from "./tools/search.ts";
 import { runSummarizer } from "./tools/summarizer.ts";
 import { errorMessage } from "./utils/errors.ts";
+
+interface ExitReport {
+  readonly code: 1 | 2;
+  readonly diagnostic: Option.Option<string>;
+}
 
 const dispatch = Action.$match({
   Search: ({ input }) => runSearch(input).pipe(Effect.flatMap(Console.log)),
@@ -21,10 +26,24 @@ makeCli(dispatch).pipe(
   Command.run({ version: pkg.version }),
   Effect.catch((error) =>
     Effect.gen(function* () {
-      // Effect CLI has already rendered ShowHelp. Operational failures get a short message.
-      if (error._tag !== "ShowHelp") yield* Console.error(`Error: ${errorMessage(error)}`);
+      // ShowHelp already carries a rendered diagnostic; validation and operational failures do not.
+      const report: ExitReport = Match.value(error).pipe(
+        Match.tag("ShowHelp", () => ({ code: 2 as const, diagnostic: Option.none<string>() })),
+        Match.tag("ValidationError", (error) => ({
+          code: 2 as const,
+          diagnostic: Option.some(error.message),
+        })),
+        Match.orElse((error) => ({
+          code: 1 as const,
+          diagnostic: Option.some(errorMessage(error)),
+        })),
+      );
+      yield* Option.match(report.diagnostic, {
+        onNone: () => Effect.void,
+        onSome: (message) => Console.error(`Error: ${message}`),
+      });
       yield* Effect.sync(() => {
-        process.exitCode = error._tag === "ShowHelp" || error._tag === "ValidationError" ? 2 : 1;
+        process.exitCode = report.code;
       });
     }),
   ),
@@ -32,7 +51,10 @@ makeCli(dispatch).pipe(
     Layer.merge(AppLive, Logger.layer([Logger.withConsoleError(Logger.formatSimple)])),
   ),
   Effect.tapCause((cause) =>
-    Cause.hasInterruptsOnly(cause) ? Effect.void : Console.error(Cause.pretty(cause)),
+    Boolean.match(Cause.hasInterruptsOnly(cause), {
+      onTrue: () => Effect.void,
+      onFalse: () => Console.error(Cause.pretty(cause)),
+    }),
   ),
   BunRuntime.runMain({ disableErrorReporting: true }),
 );

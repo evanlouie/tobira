@@ -7,6 +7,7 @@ import {
   SearchLimit,
   SUMMARY_TYPES,
   SUPPORTED_LANGUAGES,
+  SummarizerFields,
   SummarizerInput,
   Url,
 } from "../domain.ts";
@@ -45,7 +46,8 @@ export const makeCli = <E, R>(dispatch: (action: Action) => Effect.Effect<void, 
       ),
     },
     (input) =>
-      Schema.decodeEffect(Schema.toType(SummarizerInput))(input).pipe(
+      Schema.encodeEffect(SummarizerFields)(input).pipe(
+        Effect.flatMap((fields) => Schema.decodeUnknownEffect(SummarizerInput)(fields)),
         Effect.mapError((error) => new ValidationError({ message: error.message })),
         Effect.flatMap((input) => dispatch(Action.Summarize({ input }))),
       ),

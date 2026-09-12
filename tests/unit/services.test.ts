@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { Deferred, Effect, Layer, Option, Schema } from "effect";
+import { Boolean, Deferred, Effect, Layer, Option, Schema } from "effect";
 import { HttpClient, HttpClientResponse } from "effect/unstable/http";
 import { SearchInput, SummarizerInput, SummarySource, SummaryStyle } from "../../src/domain.ts";
 import { Kagi } from "../../src/kagi/client.ts";
@@ -98,8 +98,9 @@ describe("concurrent search", () => {
         const secondStarted = yield* Deferred.make<void>();
         const kagi = Kagi.of({
           search: (query) =>
-            query === "first"
-              ? Deferred.await(secondStarted).pipe(
+            Boolean.match(query === "first", {
+              onTrue: () =>
+                Deferred.await(secondStarted).pipe(
                   Effect.as({
                     data: [
                       {
@@ -110,10 +111,12 @@ describe("concurrent search", () => {
                       },
                     ],
                   }),
-                )
-              : Deferred.succeed(secondStarted, void 0).pipe(
+                ),
+              onFalse: () =>
+                Deferred.succeed(secondStarted, void 0).pipe(
                   Effect.andThen(Effect.fail(new RateLimitError({ message: "rate limited" }))),
                 ),
+            }),
           summarize: () => Effect.die("not used"),
         });
         const text = yield* runSearch(

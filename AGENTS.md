@@ -26,6 +26,10 @@ Read `repos/effect/LLMS.md` before changing Effect code. The existing Git subtre
 - Use `Data.TaggedEnum` for domain variants and actions, with exhaustive `$match` dispatch. Errors extend `Data.TaggedError`, not `Data.TaggedEnum`.
 - Prefer Effect's standard-library modules over native JavaScript collection, configuration, timing, and filesystem APIs. Cheerio remains the HTML parsing boundary.
 
+JavaScript boolean logic operators (`&&`, `||`, `!`, `&&=`, and `||=`) and ternary expressions are banned in application and test code. Use Effect's `Boolean` module instead. Use `Boolean.match` for conditional values and lazy branches. `Boolean.and` and `Boolean.or` evaluate both arguments, so use `Boolean.match` when short-circuiting matters. Keep type narrowing through `Option` combinators rather than adding casts. These rules do not apply to the read-only vendored subtree.
+
+Model domain decisions as types before writing branches. Prefer exclusive tagged variants over boolean flags, counters, or optional fields whose combinations need interpretation. Decode external values into those variants at the boundary, then use exhaustive dispatch. Use `Option` and non-empty collections for presence and cardinality. Do not replace an `if` tree with a `Boolean.match` tree without fixing the model. Reserve boolean predicates for boundary classification and low-level runtime checks.
+
 ## Architecture
 
 The CLI and MCP adapters call shared Effect runners. No separate MCP SDK, Zod, neverthrow, or ts-pattern dependency is needed.
@@ -55,7 +59,9 @@ Tokens remain `Redacted` until constructing the Kagi cookie. Do not include toke
 
 Search accepts one to ten queries and limits results to between 1 and 50 per query. `Effect.forEach` runs queries concurrently while preserving input order and partial failures. Result numbers continue across queries. Search timeouts are 10 seconds per query; summary timeouts are 60 seconds. Both interrupt the underlying HTTP request.
 
-Summary frames are snapshots, not deltas. Keep the latest non-empty output even if metadata follows it. Explicit Kagi error frames take precedence over output. Article length is invalid for keypoints or eli5 summaries.
+`SummarizerInput` is a codec from the external field union to a typed URL summary request. The article variant alone carries a length. CLI flags first encode through `SummarizerFields`, then decode through this codec before action dispatch. MCP uses the same codec. Encoding emits the explicit summary style, including the default article style.
+
+Summary frames are snapshots, not deltas. The parser reduces frames through `Empty`, `Unreadable`, `Pending`, `Ready`, and `Rejected` states. Metadata and invalid frames preserve valid progress. New output replaces the previous snapshot. Rejection is terminal and retains the first rejection message.
 
 MCP exposes `kagi_search_fetch` and `kagi_summarizer`. Generate its input JSON Schema from the same codecs used for validation. Return plain-text content, not JSON-quoted strings. Operational failures set `isError: true`. Keep stdout reserved for protocol messages. Stdin EOF shuts the server down cleanly.
 

@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import {
   Array,
+  Boolean,
   Deferred,
   Effect,
   Layer,
@@ -61,7 +62,13 @@ describe("MCP stdio protocol", () => {
           stdin: Stream.fromQueue(input),
           stdout: () =>
             Sink.forEach((chunk: string | Uint8Array) =>
-              Queue.offer(output, typeof chunk === "string" ? encoder.encode(chunk) : chunk),
+              Queue.offer(
+                output,
+                Boolean.match(typeof chunk === "string", {
+                  onTrue: () => encoder.encode(Schema.decodeUnknownSync(Schema.String)(chunk)),
+                  onFalse: () => Schema.decodeUnknownSync(Schema.Uint8Array)(chunk),
+                }),
+              ),
             ),
         });
         yield* Effect.forkScoped(

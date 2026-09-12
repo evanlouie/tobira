@@ -285,7 +285,11 @@ CLI / MCP → shared tool runners → Kagi → KagiHttp → Effect HttpClient
 | `src/tools/` | Shared runners, concurrent searches, partial results, and timeouts |
 | `src/utils/` | Authentication, typed errors, formatting, and timeout composition |
 
-Domain values use `Option` for absence. `Data.TaggedEnum` models actions, summary sources and styles, parser events, and query outcomes. Expected failures extend `Data.TaggedError`. Schema codecs decode CLI, MCP, HTML, and summary inputs and encode outgoing request fields. Session tokens remain `Redacted` until the HTTP cookie boundary.
+Domain values use `Option` for absence. `Data.TaggedEnum` models actions, summary sources and styles, parser states and events, response dispositions, and query outcomes. Expected failures extend `Data.TaggedError`. Schema codecs decode CLI, MCP, HTML, and summary inputs and encode outgoing request fields. Session tokens remain `Redacted` until the HTTP cookie boundary.
+
+Summary inputs decode into typed requests before dispatch. Only the article variant can carry a length; keypoints and eli5 reject that field at the boundary. Encoding emits an explicit summary style, including the default article style.
+
+The summary parser reduces frames through `Empty`, `Unreadable`, `Pending`, `Ready`, and `Rejected` states. Each state carries only its relevant data. Metadata preserves progress, output replaces the previous snapshot, and rejection is terminal.
 
 Searches run with bounded `Effect.forEach` concurrency and preserve query order. Effect timeouts interrupt requests and run their finalizers. MCP uses the same runners, returns plain text, and marks operational failures with `isError: true`. Closing stdin shuts down the server cleanly.
 

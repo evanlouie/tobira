@@ -2,6 +2,9 @@
   "$schema": "./node_modules/@effect/tsgo/oxlint-schema.json",
   "extends": ["./node_modules/@effect/tsgo/oxlint-presets/recommended.json"],
   "plugins": ["unicorn", "typescript", "oxc"],
+  "rules": {
+    "no-ternary": "error"
+  },
   "options": {
     "typeAware": true,
     "typeCheck": true

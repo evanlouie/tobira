@@ -1,8 +1,19 @@
 import { describe, expect, test } from "bun:test";
 import { Array, Effect, Option, Schema } from "effect";
-import { SearchInput, SearchResult, SummarizerInput } from "../../src/domain.ts";
+import {
+  SearchInput,
+  SearchResult,
+  SummarizerInput,
+  SummarySource,
+  SummaryStyle,
+} from "../../src/domain.ts";
 import { parseSearchResults } from "../../src/kagi/search.ts";
-import { parseStreamingSummary } from "../../src/kagi/summarize.ts";
+import {
+  parseStreamingSummary,
+  reduceFrame,
+  SummaryFrame,
+  SummaryState,
+} from "../../src/kagi/summarize.ts";
 import { formatSearchResults } from "../../src/utils/formatting.ts";
 
 const resultHtml = (name: string, description = `Snippet ${name}`) => `
@@ -126,7 +137,46 @@ describe("summary frame parser", () => {
   });
 });
 
+describe("summary state transitions", () => {
+  test("distinguishes absent, unreadable, and pending content", () => {
+    const unreadable = reduceFrame(SummaryState.Empty(), SummaryFrame.Invalid());
+    expect(unreadable).toEqual(SummaryState.Unreadable());
+    expect(reduceFrame(unreadable, SummaryFrame.Metadata())).toEqual(SummaryState.Pending());
+    expect(reduceFrame(SummaryState.Pending(), SummaryFrame.Invalid())).toEqual(
+      SummaryState.Pending(),
+    );
+  });
+
+  test("keeps the latest snapshot and makes rejection terminal", () => {
+    const draft = reduceFrame(SummaryState.Pending(), SummaryFrame.Output({ text: "Draft" }));
+    const ready = reduceFrame(draft, SummaryFrame.Output({ text: "Final" }));
+    expect(ready).toEqual(SummaryState.Ready({ output: "Final" }));
+    expect(reduceFrame(ready, SummaryFrame.Metadata())).toEqual(ready);
+    expect(reduceFrame(ready, SummaryFrame.Invalid())).toEqual(ready);
+    const rejected = reduceFrame(ready, SummaryFrame.Rejected({ message: "Denied" }));
+    expect(rejected).toEqual(SummaryState.Rejected({ message: "Denied" }));
+    expect(reduceFrame(rejected, SummaryFrame.Output({ text: "Too late" }))).toEqual(rejected);
+    expect(reduceFrame(rejected, SummaryFrame.Rejected({ message: "Another error" }))).toEqual(
+      rejected,
+    );
+  });
+});
+
 describe("boundary schemas", () => {
+  test.each(["keypoints", "eli5"] as const)(
+    "rejects article length on %s at the boundary",
+    (summary_type) => {
+      const wire = { url: "https://example.com", summary_type, target_language: "EN" } as const;
+      const decoded = Schema.decodeUnknownSync(SummarizerInput)(wire);
+      expect(Schema.encodeSync(SummarizerInput)(decoded)).toEqual(wire);
+      expect(
+        Option.isNone(
+          Schema.decodeUnknownOption(SummarizerInput)({ ...wire, summary_length: "digest" }),
+        ),
+      ).toBe(true);
+    },
+  );
+
   test("trims queries and represents missing fields as Option", () => {
     const input = Schema.decodeUnknownSync(SearchInput)({ queries: ["  kagi search  "] });
     expect(input).toEqual({ queries: ["kagi search"], limit: Option.none() });
@@ -153,15 +203,19 @@ describe("boundary schemas", () => {
     expect(Option.isNone(Schema.decodeUnknownOption(SearchInput)(input))).toBe(true);
   });
 
-  test("validates summary options together and encodes omitted options", () => {
+  test("decodes defaults into an article request and encodes canonical wire fields", () => {
     const input = Schema.decodeUnknownSync(SummarizerInput)({
       url: "https://example.com",
       summary_length: "digest",
     });
-    expect(input.summary_type).toEqual(Option.none());
-    expect(input.summary_length).toEqual(Option.some("digest"));
+    expect(input).toEqual({
+      source: SummarySource.Url({ input: "https://example.com" }),
+      style: SummaryStyle.Article({ length: Option.some("digest") }),
+      language: Option.none(),
+    });
     expect(Schema.encodeSync(SummarizerInput)(input)).toEqual({
       url: "https://example.com",
+      summary_type: "article",
       summary_length: "digest",
     });
     expect(

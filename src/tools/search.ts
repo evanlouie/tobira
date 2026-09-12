@@ -50,9 +50,10 @@ export const runSearch = Effect.fn("runSearch")(function* (input: SearchInput) {
     ),
   );
   const text = formatSearchResults(input.queries, responses);
-  return Array.isArrayEmpty(errors)
-    ? text
-    : `${text}\n\nErrors encountered:\n${Array.join(errors, "\n")}`;
+  return Array.match(errors, {
+    onEmpty: () => text,
+    onNonEmpty: (errors) => `${text}\n\nErrors encountered:\n${Array.join(errors, "\n")}`,
+  });
 });
 
 export const searchToolConfig = {

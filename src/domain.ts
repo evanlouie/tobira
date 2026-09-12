@@ -1,10 +1,12 @@
-import { Data, Option, Schema } from "effect";
+import { Boolean, Data, Effect, Option, Schema, SchemaTransformation } from "effect";
 
 export const NonEmptyText = Schema.Trim.check(Schema.isMinLength(1));
 export const Url = Schema.String.check(
-  Schema.makeFilter(
-    (value) =>
-      Option.isSome(Schema.decodeOption(Schema.URLFromString)(value)) || "Expected a valid URL",
+  Schema.makeFilter((value) =>
+    Boolean.match(Option.isSome(Schema.decodeOption(Schema.URLFromString)(value)), {
+      onTrue: () => true,
+      onFalse: () => "Expected a valid URL",
+    }),
   ),
 );
 export const SearchLimit = Schema.Int.check(Schema.isBetween({ minimum: 1, maximum: 50 }));
@@ -64,7 +66,8 @@ export const SearchInput = Schema.Struct({
 });
 export type SearchInput = typeof SearchInput.Type;
 
-export const SummarizerInput = Schema.Struct({
+/** CLI flags are an intermediate boundary value, not a domain request. */
+export const SummarizerFields = Schema.Struct({
   url: Url.annotate({ description: "URL of a document to summarize." }),
   summary_type: Schema.OptionFromOptionalKey(SummaryType).annotate({
     description: "Summary style: article (default), keypoints, or eli5.",
@@ -75,15 +78,7 @@ export const SummarizerInput = Schema.Struct({
   target_language: Schema.OptionFromOptionalKey(Language).annotate({
     description: "Output language code, such as EN, DE, or FR. Defaults to EN.",
   }),
-}).check(
-  Schema.makeFilter(
-    (input) =>
-      Option.isNone(input.summary_length) ||
-      Option.getOrElse(input.summary_type, () => "article") === "article" ||
-      "--length is only supported when --type is article",
-  ),
-);
-export type SummarizerInput = typeof SummarizerInput.Type;
+});
 
 /** Article length cannot exist on a keypoints or eli5 request. */
 export type SummaryStyle = Data.TaggedEnum<{
@@ -104,6 +99,92 @@ export interface SummaryRequest {
   readonly style: SummaryStyle;
   readonly language: Option.Option<typeof Language.Type>;
 }
+
+const UrlSource = Schema.TaggedStruct("Url", { input: Url });
+const urlSummary = <S extends Schema.Constraint>(style: S) =>
+  Schema.Struct({
+    source: UrlSource,
+    style,
+    language: Schema.Option(Language),
+  });
+const commonSummaryFields = {
+  url: SummarizerFields.fields.url,
+  target_language: SummarizerFields.fields.target_language,
+};
+const noArticleLength = Schema.OptionFromOptionalKey(Schema.Never);
+
+/** Each wire variant decodes directly into a valid domain request. */
+export const SummarizerInput = Schema.Union([
+  Schema.Struct({
+    ...commonSummaryFields,
+    summary_type: Schema.Literal("article").pipe(
+      Schema.withDecodingDefaultKey(Effect.succeed("article")),
+    ),
+    summary_length: SummarizerFields.fields.summary_length,
+  }).pipe(
+    Schema.decodeTo(
+      urlSummary(Schema.TaggedStruct("Article", { length: Schema.Option(SummaryLength) })),
+      SchemaTransformation.transform({
+        decode: (input) => ({
+          source: SummarySource.Url({ input: input.url }),
+          style: SummaryStyle.Article({ length: input.summary_length }),
+          language: input.target_language,
+        }),
+        encode: (request) => ({
+          url: request.source.input,
+          summary_type: "article" as const,
+          summary_length: request.style.length,
+          target_language: request.language,
+        }),
+      }),
+    ),
+  ),
+  Schema.Struct({
+    ...commonSummaryFields,
+    summary_type: Schema.Literal("keypoints"),
+    summary_length: noArticleLength,
+  }).pipe(
+    Schema.decodeTo(
+      urlSummary(Schema.TaggedStruct("Keypoints", {})),
+      SchemaTransformation.transform({
+        decode: (input) => ({
+          source: SummarySource.Url({ input: input.url }),
+          style: SummaryStyle.Keypoints(),
+          language: input.target_language,
+        }),
+        encode: (request) => ({
+          url: request.source.input,
+          summary_type: "keypoints" as const,
+          summary_length: Option.none<never>(),
+          target_language: request.language,
+        }),
+      }),
+    ),
+  ),
+  Schema.Struct({
+    ...commonSummaryFields,
+    summary_type: Schema.Literal("eli5"),
+    summary_length: noArticleLength,
+  }).pipe(
+    Schema.decodeTo(
+      urlSummary(Schema.TaggedStruct("Eli5", {})),
+      SchemaTransformation.transform({
+        decode: (input) => ({
+          source: SummarySource.Url({ input: input.url }),
+          style: SummaryStyle.Eli5(),
+          language: input.target_language,
+        }),
+        encode: (request) => ({
+          url: request.source.input,
+          summary_type: "eli5" as const,
+          summary_length: Option.none<never>(),
+          target_language: request.language,
+        }),
+      }),
+    ),
+  ),
+]);
+export type SummarizerInput = typeof SummarizerInput.Type;
 
 export type Action = Data.TaggedEnum<{
   Search: { readonly input: SearchInput };

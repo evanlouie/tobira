@@ -1,4 +1,15 @@
-import { Cause, Context, Deferred, Effect, Fiber, Layer, Schema, Stdio, Stream } from "effect";
+import {
+  Boolean,
+  Cause,
+  Context,
+  Deferred,
+  Effect,
+  Fiber,
+  Layer,
+  Schema,
+  Stdio,
+  Stream,
+} from "effect";
 import { McpProtocol, McpSchema, McpServer, Tool } from "effect/unstable/ai";
 import pkg from "../../package.json";
 import { Kagi } from "../kagi/client.ts";
@@ -19,9 +30,11 @@ const registerTool = Effect.fn("registerTool")(function* <A, I>(
 ) {
   const server = yield* McpServer.McpServer;
   const services = yield* Effect.context<Kagi | Auth>();
-  const inputSchema = yield* Schema.decodeUnknownEffect(McpSchema.ToolJsonSchema)(
-    Tool.getJsonSchemaFromSchema(config.inputSchema),
-  ).pipe(Effect.orDie);
+  // MCP arguments are objects, including codecs whose wire schema is a union of objects.
+  const inputSchema = yield* Schema.decodeEffect(McpSchema.ToolJsonSchema)({
+    ...Tool.getJsonSchemaFromSchema(config.inputSchema),
+    type: "object",
+  }).pipe(Effect.orDie);
   yield* server.addTool({
     tool: new McpSchema.Tool({
       name: config.name,
@@ -88,8 +101,14 @@ export const startMcpServer = Effect.gen(function* () {
   yield* Effect.raceFirst(Fiber.join(server), Deferred.await(ended)).pipe(
     Effect.catchCause((cause) =>
       Effect.gen(function* () {
-        if (Cause.hasInterruptsOnly(cause) && (yield* Deferred.isDone(ended))) return;
-        return yield* Effect.failCause(cause);
+        const endedNormally = yield* Boolean.match(Cause.hasInterruptsOnly(cause), {
+          onTrue: () => Deferred.isDone(ended),
+          onFalse: () => Effect.succeed(false),
+        });
+        return yield* Boolean.match(endedNormally, {
+          onTrue: () => Effect.void,
+          onFalse: () => Effect.failCause(cause),
+        });
       }),
     ),
   );

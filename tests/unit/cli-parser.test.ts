@@ -4,7 +4,7 @@ import { Array, Effect, Layer, Option, Ref } from "effect";
 import { TestConsole } from "effect/testing";
 import { Command } from "effect/unstable/cli";
 import { makeCli } from "../../src/cli/parser.ts";
-import { Action } from "../../src/domain.ts";
+import { Action, SummarySource, SummaryStyle } from "../../src/domain.ts";
 
 const testLayer = Layer.merge(BunServices.layer, TestConsole.layer);
 const parse = Effect.fnUntraced(function* (args: ReadonlyArray<string>) {
@@ -58,10 +58,9 @@ describe("Effect CLI", () => {
       Option.some(
         Action.Summarize({
           input: {
-            url: "https://example.com/article",
-            summary_type: Option.some("article"),
-            summary_length: Option.some("digest"),
-            target_language: Option.some("EN"),
+            source: SummarySource.Url({ input: "https://example.com/article" }),
+            style: SummaryStyle.Article({ length: Option.some("digest") }),
+            language: Option.some("EN"),
           },
         }),
       ),

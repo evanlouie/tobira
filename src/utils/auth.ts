@@ -35,12 +35,7 @@ export class Auth extends Context.Service<
       const provider = yield* ConfigProvider.ConfigProvider;
       const fs = yield* FileSystem.FileSystem;
       const path = yield* Path.Path;
-      // Resolve per operation so replacing an expired token does not require restarting MCP.
-      const token = Effect.gen(function* () {
-        const env = yield* Config.option(Config.String("KAGI_SESSION_TOKEN"));
-        const fromEnv = Option.flatMap(env, decodeToken);
-        if (Option.isSome(fromEnv)) return fromEnv.value;
-
+      const fileToken = Effect.gen(function* () {
         const home = yield* Config.String("HOME").pipe(
           Config.orElse(() => Config.String("USERPROFILE")),
         );
@@ -56,7 +51,12 @@ export class Auth extends Context.Service<
         return yield* Effect.fromOption(Option.flatMap(contents, decodeToken)).pipe(
           Effect.mapError(() => missingToken),
         );
-      }).pipe(
+      });
+      // Option encodes absence; the fallback effect stays lazy and preserves file errors.
+      // Resolve per operation so token rotation does not require restarting MCP.
+      const token = Config.option(Config.String("KAGI_SESSION_TOKEN")).pipe(
+        Effect.map((env) => Option.flatMap(env, decodeToken)),
+        Effect.flatMap(Option.match({ onSome: Effect.succeed, onNone: () => fileToken })),
         Effect.catchTag("ConfigError", () => Effect.fail(missingToken)),
         Effect.provideService(ConfigProvider.ConfigProvider, provider),
       );

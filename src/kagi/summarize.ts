@@ -1,4 +1,4 @@
-import { Array, Data, Effect, Option, Schema, String } from "effect";
+import { Array, Boolean, Data, Effect, Option, Schema, String } from "effect";
 import {
   Language,
   NonEmptyText,
@@ -68,13 +68,13 @@ const StreamingMessage = Schema.fromJsonString(
   }),
 );
 
-type SummaryFrame = Data.TaggedEnum<{
+export type SummaryFrame = Data.TaggedEnum<{
   Invalid: {};
   Metadata: {};
   Output: { readonly text: string };
   Rejected: { readonly message: string };
 }>;
-const SummaryFrame = Data.taggedEnum<SummaryFrame>();
+export const SummaryFrame = Data.taggedEnum<SummaryFrame>();
 
 const parseFrame = (raw: string): SummaryFrame =>
   Schema.decodeOption(StreamingMessage)(raw).pipe(
@@ -84,77 +84,97 @@ const parseFrame = (raw: string): SummaryFrame =>
         const rejection = message.reply.pipe(
           Option.map(String.trim),
           Option.filter(String.isNonEmpty),
+          Option.filter(() => Option.contains(message.state, "error")),
+          Option.map((message) => SummaryFrame.Rejected({ message })),
         );
-        if (Option.contains(message.state, "error") && Option.isSome(rejection)) {
-          return SummaryFrame.Rejected({ message: rejection.value });
-        }
         const output = message.output_data.pipe(
           Option.flatMap(({ markdown }) => markdown),
           Option.orElse(() => message.md),
           Option.filter((text) => String.isNonEmpty(String.trim(text))),
+          Option.map((text) => SummaryFrame.Output({ text })),
         );
-        return Option.match(output, {
-          onNone: () => SummaryFrame.Metadata(),
-          onSome: (text) => SummaryFrame.Output({ text }),
-        });
+        return rejection.pipe(
+          Option.orElse(() => output),
+          Option.getOrElse(() => SummaryFrame.Metadata()),
+        );
       },
     }),
   );
 
-interface SummaryState {
-  readonly validFrames: number;
-  readonly output: Option.Option<string>;
-  readonly rejection: Option.Option<string>;
-}
-const initialState: SummaryState = {
-  validFrames: 0,
-  output: Option.none(),
-  rejection: Option.none(),
-};
-const reduceFrame = (state: SummaryState, frame: SummaryFrame): SummaryState =>
+/** These states cannot contain contradictory output, rejection, and frame-count fields. */
+export type SummaryState = Data.TaggedEnum<{
+  Empty: {};
+  Unreadable: {};
+  Pending: {};
+  Ready: { readonly output: string };
+  Rejected: { readonly message: string };
+}>;
+export const SummaryState = Data.taggedEnum<SummaryState>();
+
+const stateFromFrame = SummaryFrame.$match({
+  Invalid: () => SummaryState.Unreadable(),
+  Metadata: () => SummaryState.Pending(),
+  Output: ({ text }) => SummaryState.Ready({ output: text }),
+  Rejected: ({ message }) => SummaryState.Rejected({ message }),
+});
+
+const advanceSummary = (
+  state: Extract<SummaryState, { readonly _tag: "Pending" | "Ready" }>,
+  frame: SummaryFrame,
+): SummaryState =>
   SummaryFrame.$match(frame, {
     Invalid: () => state,
-    Metadata: () => ({ ...state, validFrames: state.validFrames + 1 }),
-    Output: ({ text }) => ({
-      ...state,
-      validFrames: state.validFrames + 1,
-      output: Option.some(text),
-    }),
-    Rejected: ({ message }) => ({
-      ...state,
-      validFrames: state.validFrames + 1,
-      rejection: Option.orElse(state.rejection, () => Option.some(message)),
-    }),
+    Metadata: () => state,
+    Output: ({ text }) => SummaryState.Ready({ output: text }),
+    Rejected: ({ message }) => SummaryState.Rejected({ message }),
   });
 
-/** Frames are snapshots, not deltas. Keep the latest output even when metadata follows it. */
-export const parseStreamingSummary = Effect.fn("parseStreamingSummary")(function* (
-  streamData: string,
-) {
-  if (isHtmlDocument(streamData))
-    return yield* new ParseError({ message: "Unexpected HTML response from Kagi summarizer" });
-  const frames = Array.getSomes(
-    Array.map(String.split(streamData, "\u0000"), (raw) =>
-      Schema.decodeOption(NonEmptyText)(
-        String.replace(/^(?:final:|new_message\.json:)/, "")(String.trim(raw)),
-      ),
-    ),
-  );
-  if (Array.isArrayEmpty(frames))
-    return yield* new ParseError({ message: "No summary data received" });
-  const state = Array.reduce(frames, initialState, (state, raw) =>
-    reduceFrame(state, parseFrame(raw)),
-  );
-  if (Option.isSome(state.rejection))
-    return yield* new HttpError({ status: Option.none(), message: state.rejection.value });
-  return yield* Option.match(state.output, {
-    onSome: (output) => Effect.succeed({ output }),
-    onNone: () =>
-      Effect.fail(
-        new ParseError({
-          message:
-            state.validFrames === 0 ? "Failed to parse summary response" : "Empty summary received",
-        }),
-      ),
+/** Output frames replace snapshots. Metadata preserves progress. Rejection is terminal. */
+export const reduceFrame = (state: SummaryState, frame: SummaryFrame): SummaryState =>
+  SummaryState.$match(state, {
+    Empty: () => stateFromFrame(frame),
+    Unreadable: () => stateFromFrame(frame),
+    Pending: (state) => advanceSummary(state, frame),
+    Ready: (state) => advanceSummary(state, frame),
+    Rejected: (state) => state,
   });
+
+const resolveSummary = SummaryState.$match({
+  Empty: () => Effect.fail(new ParseError({ message: "No summary data received" })),
+  Unreadable: () => Effect.fail(new ParseError({ message: "Failed to parse summary response" })),
+  Pending: () => Effect.fail(new ParseError({ message: "Empty summary received" })),
+  Ready: ({ output }) => Effect.succeed({ output }),
+  Rejected: ({ message }) => Effect.fail(new HttpError({ status: Option.none(), message })),
 });
+
+type SummaryDocument = Data.TaggedEnum<{
+  Html: {};
+  Frames: { readonly frames: ReadonlyArray<SummaryFrame> };
+}>;
+const SummaryDocument = Data.taggedEnum<SummaryDocument>();
+
+const decodeDocument = (body: string): SummaryDocument =>
+  Boolean.match(isHtmlDocument(body), {
+    onTrue: () => SummaryDocument.Html(),
+    onFalse: () =>
+      SummaryDocument.Frames({
+        frames: Array.map(
+          Array.getSomes(
+            Array.map(String.split(body, "\u0000"), (raw) =>
+              Schema.decodeOption(NonEmptyText)(
+                String.replace(/^(?:final:|new_message\.json:)/, "")(String.trim(raw)),
+              ),
+            ),
+          ),
+          parseFrame,
+        ),
+      }),
+  });
+
+export const parseStreamingSummary = Effect.fn("parseStreamingSummary")((body: string) =>
+  SummaryDocument.$match(decodeDocument(body), {
+    Html: () =>
+      Effect.fail(new ParseError({ message: "Unexpected HTML response from Kagi summarizer" })),
+    Frames: ({ frames }) => resolveSummary(Array.reduce(frames, SummaryState.Empty(), reduceFrame)),
+  }),
+);

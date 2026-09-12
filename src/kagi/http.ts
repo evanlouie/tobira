@@ -1,4 +1,16 @@
-import { Array, Context, Effect, Layer, Match, Option, Redacted, Schema, String } from "effect";
+import {
+  Array,
+  Boolean,
+  Context,
+  Data,
+  Effect,
+  Layer,
+  Match,
+  Option,
+  Redacted,
+  Schema,
+  String,
+} from "effect";
 import { HttpClient, HttpClientRequest } from "effect/unstable/http";
 import { Auth } from "../utils/auth.ts";
 import {
@@ -35,34 +47,63 @@ export const isAuthOrChallengeBody = (body: string): boolean =>
   Array.some(challengeMarkers, (marker) => String.includes(marker)(String.toLowerCase(body)));
 export const isHtmlDocument = (body: string): boolean => /<!doctype html|<html[\s>]/i.test(body);
 
-export const checkResponseStatus = (status: number): Effect.Effect<void, AppError> =>
+type ResponseDisposition = Data.TaggedEnum<{
+  Accepted: {};
+  InvalidSession: {};
+  RateLimited: {};
+  Unsuccessful: { readonly status: number };
+  BrowserVerification: {};
+}>;
+const ResponseDisposition = Data.taggedEnum<ResponseDisposition>();
+
+const acceptResponse = ResponseDisposition.$match({
+  Accepted: () => Effect.void,
+  InvalidSession: () => Effect.fail(new AuthError({ message: "Invalid or expired session token" })),
+  RateLimited: () =>
+    Effect.fail(new RateLimitError({ message: "Kagi rate limit exceeded; try again later" })),
+  Unsuccessful: ({ status }) =>
+    Effect.fail(new HttpError({ status: Option.some(status), message: `HTTP ${status}` })),
+  BrowserVerification: () =>
+    Effect.fail(
+      new KagiChallengeError({
+        message:
+          "Kagi requires additional browser verification; refresh your session token or complete the challenge in a browser",
+      }),
+    ),
+});
+
+/** HTTP status codes are translated into domain dispositions only at this boundary. */
+const classifyStatus = (status: number): ResponseDisposition =>
   Match.value(status).pipe(
-    Match.when(Match.is(401, 403), () =>
-      Effect.fail(new AuthError({ message: "Invalid or expired session token" })),
-    ),
-    Match.when(429, () =>
-      Effect.fail(new RateLimitError({ message: "Kagi rate limit exceeded; try again later" })),
-    ),
+    Match.when(Match.is(401, 403), () => ResponseDisposition.InvalidSession()),
+    Match.when(429, () => ResponseDisposition.RateLimited()),
     Match.when(
-      (status) => status < 200 || status >= 300,
-      (status) =>
-        Effect.fail(new HttpError({ status: Option.some(status), message: `HTTP ${status}` })),
+      (status) => Boolean.or(status < 200, status >= 300),
+      (status) => ResponseDisposition.Unsuccessful({ status }),
     ),
-    Match.orElse(() => Effect.void),
+    Match.orElse(() => ResponseDisposition.Accepted()),
   );
+
+export const checkResponseStatus = (status: number): Effect.Effect<void, AppError> =>
+  acceptResponse(classifyStatus(status));
 
 export const checkNotAuthOrChallengeResponse = (
   url: string,
   body: Option.Option<string>,
 ): Effect.Effect<void, AppError> =>
-  isAuthOrChallengeUrl(url) || Option.exists(body, isAuthOrChallengeBody)
-    ? Effect.fail(
-        new KagiChallengeError({
-          message:
-            "Kagi requires additional browser verification; refresh your session token or complete the challenge in a browser",
-        }),
-      )
-    : Effect.void;
+  acceptResponse(
+    Option.some(url).pipe(
+      Option.filter(isAuthOrChallengeUrl),
+      Option.map(() => ResponseDisposition.BrowserVerification()),
+      Option.orElse(() =>
+        body.pipe(
+          Option.filter(isAuthOrChallengeBody),
+          Option.map(() => ResponseDisposition.BrowserVerification()),
+        ),
+      ),
+      Option.getOrElse(() => ResponseDisposition.Accepted()),
+    ),
+  );
 
 /** HttpClient owns request cancellation, including interruption while reading the body. */
 export class KagiHttp extends Context.Service<
