@@ -30,6 +30,38 @@ describe("search parser", () => {
     ]);
   });
 
+  test.each([
+    { dateHtml: "", publishedDate: undefined },
+    { dateHtml: '<span class="__sri-time --new">Today</span>', publishedDate: "Today" },
+    { dateHtml: "Apr 22, 2026", publishedDate: "Apr 22, 2026" },
+  ])(
+    "excludes summarize links with date metadata $publishedDate",
+    ({ dateHtml, publishedDate }) => {
+      const results = searchTesting.parseSearchResults(
+        `<html><body>
+        <div class="search-result">
+          <a class="__sri_title_link" href="https://example.com">Example</a>
+          <div class="__sri-desc"><div>
+            ${dateHtml} Learn to Summarize
+            <a class="_0_summarize_page summarize-link" href="/summarizer?url=https%3A//example.com/">Summarize</a>
+          </div></div>
+        </div>
+      </body></html>`,
+        10,
+      );
+
+      expect(results._unsafeUnwrap()).toEqual([
+        {
+          t: 0,
+          url: "https://example.com",
+          title: "Example",
+          snippet: "Learn to Summarize",
+          ...(publishedDate === undefined ? {} : { publishedDate }),
+        },
+      ]);
+    },
+  );
+
   test("extracts published dates from Kagi result metadata", () => {
     const results = searchTesting.parseSearchResults(
       `<html><body>

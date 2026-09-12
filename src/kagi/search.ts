@@ -168,14 +168,15 @@ function extractPublishedDateAndSnippet($description: cheerio.Cheerio<AnyNode>):
   publishedDate?: string;
   snippet: string;
 } {
-  const spanDate = normalizeText($description.find(".__sri-time").first().text());
-  const snippetWithoutDate = normalizeText(
-    $description.clone().find(".__sri-time").remove().end().text(),
-  );
+  const $content = $description.clone();
+  $content.find(".summarize-link").remove();
+
+  const spanDate = normalizeText($content.find(".__sri-time").first().text());
+  const snippetWithoutDate = normalizeText($content.find(".__sri-time").remove().end().text());
 
   if (spanDate !== "") return { publishedDate: spanDate, snippet: snippetWithoutDate };
 
-  const snippet = normalizeText($description.text());
+  const snippet = snippetWithoutDate;
   const leadingDate = snippet.match(leadingPublishedDatePattern)?.[0];
 
   return match(leadingDate)
