@@ -10,7 +10,7 @@ This file provides guidance to LLM agents when working with code in this reposit
 bun install        # Install dependencies
 bun run start      # Show CLI help
 bun run dev        # Show CLI help with Bun inspector
-bun run typecheck  # Type-check with tsgo
+bun run typecheck  # Type-check with tsc
 bun run lint       # Lint with oxlint
 bun run fmt        # Format with oxfmt
 ```
