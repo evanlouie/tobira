@@ -24,9 +24,22 @@ describe("Kagi HTTP", () => {
     [401, "AuthError"],
     [403, "AuthError"],
     [429, "RateLimitError"],
+    [302, "HttpError"],
     [500, "HttpError"],
   ])("maps HTTP %i to %s", (status, tag) => {
-    expect(Effect.runSync(Effect.flip(checkResponseStatus(status)))).toMatchObject({ _tag: tag });
+    const response = HttpClientResponse.fromWeb(
+      HttpClientRequest.get("https://kagi.com/test"),
+      new Response(null, { status }),
+    );
+    expect(Effect.runSync(Effect.flip(checkResponseStatus(response)))).toMatchObject({ _tag: tag });
+  });
+
+  test.each([200, 204, 299])("accepts HTTP %i", (status) => {
+    const response = HttpClientResponse.fromWeb(
+      HttpClientRequest.get("https://kagi.com/test"),
+      new Response(null, { status }),
+    );
+    expect(Effect.runSyncExit(checkResponseStatus(response))._tag).toBe("Success");
   });
 
   test("detects challenge URLs and bodies", () => {
@@ -78,6 +91,58 @@ describe("Kagi HTTP", () => {
     expect(error._tag).toBe("NetworkError");
     expect(error.message).not.toContain("secret");
   });
+
+  test.each([
+    { status: 401, url: "https://kagi.com/test", tag: "AuthError" },
+    { status: 429, url: "https://kagi.com/test", tag: "RateLimitError" },
+    { status: 200, url: "https://kagi.com/login", tag: "KagiChallengeError" },
+  ])("releases unread responses on $tag before the service closes", ({ status, url, tag }) =>
+    Effect.runPromise(
+      Effect.gen(function* () {
+        const received = yield* Deferred.make<AbortSignal>();
+        const client = HttpClient.make((request, _url, signal) => {
+          const source = new Response("unread body", { status });
+          Object.defineProperty(source, "url", { value: url });
+          return Deferred.succeed(received, signal).pipe(
+            Effect.as(HttpClientResponse.fromWeb(request, source)),
+          );
+        });
+        yield* Effect.gen(function* () {
+          const http = yield* KagiHttp;
+          const error = yield* Effect.flip(
+            http.text(HttpClientRequest.get("https://kagi.com/test")),
+          );
+          const signal = yield* Deferred.await(received);
+          expect(error._tag).toBe(tag);
+          expect(signal.aborted).toBe(true);
+        }).pipe(Effect.provide(httpTest(client)));
+      }),
+    ),
+  );
+
+  test("keeps the request alive through body consumption, then closes its scope", () =>
+    Effect.runPromise(
+      Effect.gen(function* () {
+        const received = yield* Deferred.make<AbortSignal>();
+        const client = HttpClient.make((request, _url, signal) => {
+          const response = HttpClientResponse.fromWeb(request, new Response("body"));
+          const body = response.text;
+          Object.defineProperty(response, "text", {
+            value: Effect.gen(function* () {
+              expect(signal.aborted).toBe(false);
+              return yield* body;
+            }),
+          });
+          return Deferred.succeed(received, signal).pipe(Effect.as(response));
+        });
+        yield* Effect.gen(function* () {
+          const http = yield* KagiHttp;
+          expect(yield* http.text(HttpClientRequest.get("https://kagi.com/test"))).toBe("body");
+          const signal = yield* Deferred.await(received);
+          expect(signal.aborted).toBe(true);
+        }).pipe(Effect.provide(httpTest(client)));
+      }),
+    ));
 
   test("aborts the HttpClient signal on timeout", async () => {
     await Effect.runPromise(

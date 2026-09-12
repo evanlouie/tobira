@@ -296,7 +296,7 @@ The summary parser reduces frames through `Empty`, `Unreadable`, `Pending`, `Rea
 
 Searches run with bounded `Effect.forEach` concurrency and preserve query order, including duplicate queries. The search runner returns a typed `Complete` or `Partial` batch with at least one successful query. If every query fails, it raises `AllQueriesFailed` with the individual failures. CLI and MCP format the batch only after its outcome is established.
 
-Effect timeouts interrupt requests and run their finalizers. MCP uses the same runners, returns plain text, and marks operational failures with `isError: true`. Closing stdin shuts down the server cleanly.
+Each HTTP call owns a scope through body consumption. Status and challenge failures release unread responses when that scope closes, and timeouts interrupt requests and run their finalizers. MCP uses the same runners, returns plain text, and marks operational failures with `isError: true`. Closing stdin shuts down the server cleanly.
 
 ### Effect reference and tooling
 
@@ -310,7 +310,7 @@ git subtree pull --prefix=repos/effect https://github.com/Effect-TS/effect.git m
 
 `bun install` runs `effect-tsgo patch --oxlint`. `.oxlintrc.json` extends Effect's recommended preset, and `tsconfig.json` enables the language-service plugin with diagnostics delegated to Oxlint. Use the workspace TypeScript version in your editor.
 
-Type-checking and test discovery exclude `repos/`; `bun test` runs only this app's tests.
+Type-checking and test discovery exclude `repos/`; `bun test` runs only this app's tests. `bun run lint` checks both source and tests. Test-only overrides allow Bun's async callbacks and direct synchronous schema assertions; effectful code inside tests still receives the other Effect diagnostics.
 
 ### Local Setup
 

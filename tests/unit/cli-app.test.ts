@@ -7,7 +7,7 @@ import { Kagi } from "../../src/kagi/client.ts";
 import { RateLimitError } from "../../src/utils/errors.ts";
 import { authTest } from "../helpers.ts";
 
-const runSearchCli = (queries: ReadonlyArray<string>) =>
+const runCliWithArgs = (args: ReadonlyArray<string>) =>
   Effect.gen(function* () {
     const code = yield* runCli;
     return { code, stdout: yield* TestConsole.logLines, stderr: yield* TestConsole.errorLines };
@@ -15,7 +15,7 @@ const runSearchCli = (queries: ReadonlyArray<string>) =>
     Effect.provide(
       Layer.mergeAll(
         BunServices.layer,
-        Stdio.layerTest({ args: Effect.succeed(["search", ...queries]) }),
+        Stdio.layerTest({ args: Effect.succeed(args) }),
         TestConsole.layer,
         authTest,
         Layer.succeed(Kagi, {
@@ -30,7 +30,25 @@ const runSearchCli = (queries: ReadonlyArray<string>) =>
     ),
   );
 
+const runSearchCli = (queries: ReadonlyArray<string>) => runCliWithArgs(["search", ...queries]);
+
 describe("CLI search exit behavior", () => {
+  test("preserves exit 2 without printing ShowHelp diagnostics twice", async () => {
+    const result = await Effect.runPromise(runCliWithArgs(["search"]));
+    expect(result.code).toBe(2);
+    expect(result.stdout).toHaveLength(1);
+    expect(result.stderr).toHaveLength(1);
+  });
+
+  test("reports cross-field validation failures once with exit 2", async () => {
+    const result = await Effect.runPromise(
+      runCliWithArgs(["summarize", "https://example.com", "--type", "eli5", "--length", "digest"]),
+    );
+    expect(result.code).toBe(2);
+    expect(result.stdout).toEqual([]);
+    expect(result.stderr).toEqual([expect.stringContaining("Error:")]);
+  });
+
   test("all query failures produce exit 1 and diagnostics on stderr only", async () => {
     const result = await Effect.runPromise(runSearchCli(["failed", "failed"]));
     expect(result.code).toBe(1);

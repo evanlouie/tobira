@@ -3,7 +3,6 @@ import { Argument, Command, Flag } from "effect/unstable/cli";
 import {
   Action,
   ARTICLE_SUMMARY_LENGTHS,
-  NonEmptyText,
   SearchInput,
   SearchLimit,
   SUMMARY_TYPES,
@@ -19,9 +18,9 @@ export const makeCli = <E, R>(dispatch: (action: Action) => Effect.Effect<void, 
   const search = Command.make(
     "search",
     {
-      queries: Argument.String("query").pipe(
-        Argument.withSchema(NonEmptyText),
-        Argument.variadic({ min: 1, max: 10 }),
+      queries: Argument.withSchema(
+        Argument.String("query").pipe(Argument.variadic({ min: 1, max: 10 })),
+        SearchInput.fields.queries,
       ),
       limit: Flag.Int("limit").pipe(
         Flag.withSchema(SearchLimit),
@@ -29,11 +28,7 @@ export const makeCli = <E, R>(dispatch: (action: Action) => Effect.Effect<void, 
         Flag.withDescription("Results per query (default: 10, max: 50)."),
       ),
     },
-    (input) =>
-      Schema.decodeUnknownEffect(Schema.toType(SearchInput))(input).pipe(
-        Effect.mapError((error) => new ValidationError({ message: error.message })),
-        Effect.flatMap((input) => dispatch(Action.Search({ input }))),
-      ),
+    (input) => dispatch(Action.Search({ input })),
   ).pipe(Command.withDescription("Search Kagi for one to ten queries."));
 
   const summarize = Command.make(

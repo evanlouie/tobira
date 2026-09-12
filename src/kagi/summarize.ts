@@ -1,4 +1,4 @@
-import { Array, Boolean, Data, Effect, Option, Schema, String } from "effect";
+import { Array, Boolean, Data, Effect, Filter, Option, Schema, String } from "effect";
 import {
   Language,
   NonEmptyText,
@@ -158,15 +158,13 @@ const decodeDocument = (body: string): SummaryDocument =>
     onTrue: () => SummaryDocument.Html(),
     onFalse: () =>
       SummaryDocument.Frames({
-        frames: Array.map(
-          Array.getSomes(
-            Array.map(String.split(body, "\u0000"), (raw) =>
-              Schema.decodeOption(NonEmptyText)(
-                String.replace(/^(?:final:|new_message\.json:)/, "")(String.trim(raw)),
-              ),
-            ),
+        frames: Array.filterMap(
+          String.split(body, "\u0000"),
+          Filter.fromPredicateOption((raw: string) =>
+            Schema.decodeOption(NonEmptyText)(
+              String.replace(/^(?:final:|new_message\.json:)/, "")(String.trim(raw)),
+            ).pipe(Option.map(parseFrame)),
           ),
-          parseFrame,
         ),
       }),
   });

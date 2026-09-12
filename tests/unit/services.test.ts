@@ -82,7 +82,7 @@ describe("Kagi service", () => {
         HttpClientResponse.fromWeb(request, new Response('final:{"md":"Summary"}')),
       );
     });
-    const input = Schema.decodeUnknownSync(SummarizerInput)({
+    const input = Schema.decodeSync(SummarizerInput)({
       url: "https://example.com",
       summary_type: "keypoints",
     });
@@ -120,9 +120,10 @@ describe("concurrent search", () => {
             }),
           summarize: () => Effect.die("not used"),
         });
-        const batch = yield* runSearch(
-          Schema.decodeUnknownSync(SearchInput)({ queries: ["first", "second"] }),
-        ).pipe(Effect.provide(Layer.merge(authTest, Layer.succeed(Kagi, kagi))));
+        const input = yield* Schema.decodeEffect(SearchInput)({ queries: ["first", "second"] });
+        const batch = yield* runSearch(input).pipe(
+          Effect.provide(Layer.merge(authTest, Layer.succeed(Kagi, kagi))),
+        );
         expect(batch._tag).toBe("Partial");
         const text = formatSearchBatch(batch);
         expect(text).toContain('Results for search query "first"');

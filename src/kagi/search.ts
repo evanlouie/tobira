@@ -1,6 +1,6 @@
 import * as cheerio from "cheerio";
 import type { AnyNode } from "domhandler";
-import { Array, Data, Effect, Option, Schema, String } from "effect";
+import { Array, Data, Effect, Filter, Option, Schema, String } from "effect";
 import { SearchResult } from "../domain.ts";
 import { ParseError } from "../utils/errors.ts";
 
@@ -91,8 +91,9 @@ function extractResult(
 }
 
 function extractResults($: cheerio.CheerioAPI, items: string, titles: string) {
-  return Array.getSomes(
-    Array.map($(items).toArray(), (element) =>
+  return Array.filterMap(
+    $(items).toArray(),
+    Filter.fromPredicateOption((element: AnyNode) =>
       extractResult($(element), $(element).find(titles).first()),
     ),
   );

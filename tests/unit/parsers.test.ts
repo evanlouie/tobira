@@ -91,15 +91,18 @@ describe("search parser", () => {
 
   test("formats dates, missing dates, and continuous result numbers", () => {
     const text = formatSearchResults(
-      ["first", "second"],
+      ["empty", "first", "second", "missing"],
       [
+        { data: [] },
         { data: parse(resultHtml("a", '<span class="__sri-time">Today</span> First')) },
         { data: parse(resultHtml("b")) },
       ],
     );
     expect(text).toContain("Published Date: Today");
     expect(text).toContain("Published Date: Not Available");
+    expect(text).toContain("1: Example a");
     expect(text).toContain("2: Example b");
+    expect(text).toContain('Results for search query "missing"');
   });
 });
 
@@ -167,7 +170,7 @@ describe("boundary schemas", () => {
     "rejects article length on %s at the boundary",
     (summary_type) => {
       const wire = { url: "https://example.com", summary_type, target_language: "EN" } as const;
-      const decoded = Schema.decodeUnknownSync(SummarizerInput)(wire);
+      const decoded = Schema.decodeSync(SummarizerInput)(wire);
       expect(Schema.encodeSync(SummarizerInput)(decoded)).toEqual(wire);
       expect(
         Option.isNone(
@@ -178,7 +181,7 @@ describe("boundary schemas", () => {
   );
 
   test("trims queries and represents missing fields as Option", () => {
-    const input = Schema.decodeUnknownSync(SearchInput)({ queries: ["  kagi search  "] });
+    const input = Schema.decodeSync(SearchInput)({ queries: ["  kagi search  "] });
     expect(input).toEqual({ queries: ["kagi search"], limit: Option.none() });
     expect(Schema.encodeSync(SearchInput)(input)).toEqual({ queries: ["kagi search"] });
     expect(
@@ -204,7 +207,7 @@ describe("boundary schemas", () => {
   });
 
   test("decodes defaults into an article request and encodes canonical wire fields", () => {
-    const input = Schema.decodeUnknownSync(SummarizerInput)({
+    const input = Schema.decodeSync(SummarizerInput)({
       url: "https://example.com",
       summary_length: "digest",
     });
@@ -227,8 +230,6 @@ describe("boundary schemas", () => {
         }),
       ),
     ).toBe(true);
-    expect(Option.isNone(Schema.decodeUnknownOption(SummarizerInput)({ url: "not a URL" }))).toBe(
-      true,
-    );
+    expect(Option.isNone(Schema.decodeOption(SummarizerInput)({ url: "not a URL" }))).toBe(true);
   });
 });

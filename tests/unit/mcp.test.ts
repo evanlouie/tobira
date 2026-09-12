@@ -28,12 +28,29 @@ const Reply = Schema.fromJsonString(
     ),
   }),
 );
+const decodeReplies = (output: Stream.Stream<Uint8Array>) =>
+  output.pipe(
+    Stream.decodeText(),
+    Stream.splitLines,
+    Stream.mapEffect((line) => Schema.decodeEffect(Reply)(line)),
+    Stream.toQueue({ capacity: "unbounded" }),
+  );
+
 const ToolResult = Schema.Struct({
   isError: Schema.OptionFromOptionalKey(Schema.Boolean),
   content: Schema.Array(Schema.Struct({ type: Schema.Literal("text"), text: Schema.String })),
 });
 
 describe("MCP stdio protocol", () => {
+  test("reports malformed replies as decoder failures instead of timing out", () =>
+    Effect.runPromise(
+      Effect.gen(function* () {
+        const replies = yield* decodeReplies(Stream.make(new TextEncoder().encode("not-json\n")));
+        const error = yield* Effect.flip(Queue.take(replies));
+        expect(error._tag).toBe("SchemaError");
+      }).pipe(Effect.scoped, Effect.timeout("1 second")),
+    ));
+
   test("treats stdin EOF as a clean shutdown", () =>
     Effect.runPromise(
       startMcpServer.pipe(
@@ -56,7 +73,6 @@ describe("MCP stdio protocol", () => {
       Effect.gen(function* () {
         const input = yield* Queue.unbounded<Uint8Array>();
         const output = yield* Queue.unbounded<Uint8Array>();
-        const replies = yield* Queue.unbounded<typeof Reply.Type>();
         const encoder = new TextEncoder();
         const transport = Stdio.layerTest({
           stdin: Stream.fromQueue(input),
@@ -71,14 +87,7 @@ describe("MCP stdio protocol", () => {
               ),
             ),
         });
-        yield* Effect.forkScoped(
-          Stream.fromQueue(output).pipe(
-            Stream.decodeText(),
-            Stream.splitLines,
-            Stream.mapEffect((line) => Schema.decodeEffect(Reply)(line)),
-            Stream.runForEach((reply) => Queue.offer(replies, reply)),
-          ),
-        );
+        const replies = yield* decodeReplies(Stream.fromQueue(output));
         const searchCalls = yield* Ref.make(0);
         const kagi = Layer.succeed(Kagi, {
           search: (query) =>

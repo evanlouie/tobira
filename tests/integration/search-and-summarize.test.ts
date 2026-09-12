@@ -1,11 +1,18 @@
 import { beforeAll, describe, expect, test } from "bun:test";
-import { Array, Effect, Option, Result, String } from "effect";
+import { Array, Config, Console, Effect, Option, Result, String } from "effect";
 import { ARTICLE_SUMMARY_LENGTHS, SummarySource, SummaryStyle } from "../../src/domain.ts";
 import { Kagi } from "../../src/kagi/client.ts";
 import { KagiLive } from "../../src/services.ts";
 import { withTimeout } from "../../src/utils/timeout.ts";
 
-describe.skipIf(process.env.KAGI_INTEGRATION !== "1")("live Kagi search and summarize", () => {
+const integrationFlag = Effect.runSync(
+  Config.String("KAGI_INTEGRATION").pipe(Config.withDefault("0")),
+);
+const rateLimitWarning = Console.warn(
+  "Kagi rate limited the integration test; skipping remaining requests.",
+);
+
+describe.skipIf(integrationFlag !== "1")("live Kagi search and summarize", () => {
   let firstUrl = Option.none<string>();
   let rateLimited = false;
 
@@ -18,7 +25,7 @@ describe.skipIf(process.env.KAGI_INTEGRATION !== "1")("live Kagi search and summ
     if (Result.isFailure(result)) {
       if (result.failure._tag !== "RateLimitError") throw new Error(result.failure.message);
       rateLimited = true;
-      console.warn("Kagi rate limited the integration test; skipping remaining requests.");
+      await Effect.runPromise(rateLimitWarning);
       return;
     }
     firstUrl = Array.head(result.success.data).pipe(Option.map(({ url }) => url));
@@ -59,7 +66,7 @@ describe.skipIf(process.env.KAGI_INTEGRATION !== "1")("live Kagi search and summ
       if (Result.isFailure(result)) {
         if (result.failure._tag !== "RateLimitError") throw new Error(result.failure.message);
         rateLimited = true;
-        console.warn("Kagi rate limited the integration test; skipping remaining requests.");
+        await Effect.runPromise(rateLimitWarning);
         return;
       }
       expect(String.isNonEmpty(String.trim(result.success))).toBe(true);

@@ -38,7 +38,7 @@
     "mcp": "bun src/index.ts mcp",
     "test:integration": "KAGI_INTEGRATION=1 bun test tests/integration",
     "typecheck": "tsc --noEmit",
-    "lint": "oxlint --type-aware --type-check src/",
+    "lint": "oxlint --type-aware --type-check src/ tests/",
     "fmt": "oxfmt src/ tests/",
     "prepare": "effect-tsgo patch --oxlint"
   },

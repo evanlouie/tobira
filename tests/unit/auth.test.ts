@@ -1,5 +1,14 @@
 import { describe, expect, test } from "bun:test";
-import { ConfigProvider, Effect, FileSystem, Layer, Path, PlatformError, Redacted } from "effect";
+import {
+  ConfigProvider,
+  Effect,
+  FileSystem,
+  Inspectable,
+  Layer,
+  Path,
+  PlatformError,
+  Redacted,
+} from "effect";
 import { Auth, resolveToken } from "../../src/utils/auth.ts";
 
 const authLayer = (env: Record<string, string>, read: FileSystem.FileSystem["readFileString"]) =>
@@ -20,7 +29,7 @@ describe("Auth", () => {
       ),
     );
     expect(Redacted.value(token)).toBe("env-token");
-    expect(String(token)).not.toContain("env-token");
+    expect(Inspectable.toStringUnknown(token)).not.toContain("env-token");
   });
 
   test("falls back to a trimmed token file for blank environment values", async () => {

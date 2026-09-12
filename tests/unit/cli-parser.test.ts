@@ -27,7 +27,9 @@ describe("Effect CLI", () => {
 
   test("dispatches search with typed limits", async () => {
     expect(
-      await Effect.runPromise(parse(["search", "bun cli parser", "kagi examples", "--limit", "5"])),
+      await Effect.runPromise(
+        parse(["search", "  bun cli parser  ", "kagi examples", "--limit", "5"]),
+      ),
     ).toEqual(
       Option.some(
         Action.Search({
@@ -74,6 +76,7 @@ describe("Effect CLI", () => {
         ["search", "query", "--limit", "0"],
         ["search", "query", "--limit", "1.5"],
         ["search", " "],
+        ["search", ...Array.makeBy(11, (index) => `query${index}`)],
         ["search", "query", "--unknown"],
         ["summarize"],
         ["summarize", "not-a-url"],
@@ -84,7 +87,7 @@ describe("Effect CLI", () => {
       (args) => ({ args }),
     ),
   )("rejects invalid invocations: $args", async ({ args }) => {
-    const exit = await Effect.runPromise(Effect.exit(parse(args)));
+    const exit = await Effect.runPromiseExit(parse(args));
     expect(exit._tag).toBe("Failure");
   });
 

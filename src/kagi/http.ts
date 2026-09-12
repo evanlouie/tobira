@@ -1,17 +1,5 @@
-import {
-  Array,
-  Boolean,
-  Context,
-  Data,
-  Effect,
-  Layer,
-  Match,
-  Option,
-  Redacted,
-  Schema,
-  String,
-} from "effect";
-import { HttpClient, HttpClientRequest } from "effect/unstable/http";
+import { Array, Context, Data, Effect, Layer, Option, Redacted, Schema, String } from "effect";
+import { HttpClient, HttpClientRequest, HttpClientResponse } from "effect/unstable/http";
 import { Auth } from "../utils/auth.ts";
 import {
   AuthError,
@@ -73,19 +61,17 @@ const acceptResponse = ResponseDisposition.$match({
 });
 
 /** HTTP status codes are translated into domain dispositions only at this boundary. */
-const classifyStatus = (status: number): ResponseDisposition =>
-  Match.value(status).pipe(
-    Match.when(Match.is(401, 403), () => ResponseDisposition.InvalidSession()),
-    Match.when(429, () => ResponseDisposition.RateLimited()),
-    Match.when(
-      (status) => Boolean.or(status < 200, status >= 300),
-      (status) => ResponseDisposition.Unsuccessful({ status }),
-    ),
-    Match.orElse(() => ResponseDisposition.Accepted()),
-  );
+const classifyResponse = HttpClientResponse.matchStatus({
+  401: () => ResponseDisposition.InvalidSession(),
+  403: () => ResponseDisposition.InvalidSession(),
+  429: () => ResponseDisposition.RateLimited(),
+  "2xx": () => ResponseDisposition.Accepted(),
+  orElse: ({ status }) => ResponseDisposition.Unsuccessful({ status }),
+});
 
-export const checkResponseStatus = (status: number): Effect.Effect<void, AppError> =>
-  acceptResponse(classifyStatus(status));
+export const checkResponseStatus = (
+  response: HttpClientResponse.HttpClientResponse,
+): Effect.Effect<void, AppError> => acceptResponse(classifyResponse(response));
 
 export const checkNotAuthOrChallengeResponse = (
   url: string,
@@ -105,7 +91,7 @@ export const checkNotAuthOrChallengeResponse = (
     ),
   );
 
-/** HttpClient owns request cancellation, including interruption while reading the body. */
+/** Each call owns its HTTP response until body consumption or an early failure completes. */
 export class KagiHttp extends Context.Service<
   KagiHttp,
   {
@@ -117,7 +103,7 @@ export class KagiHttp extends Context.Service<
   static readonly layer = Layer.effect(
     KagiHttp,
     Effect.gen(function* () {
-      const client = yield* HttpClient.HttpClient;
+      const client = HttpClient.withScope(yield* HttpClient.HttpClient);
       const auth = yield* Auth;
       const text = Effect.fn("KagiHttp.text")(function* (
         request: HttpClientRequest.HttpClientRequest,
@@ -137,7 +123,7 @@ export class KagiHttp extends Context.Service<
               () => new NetworkError({ message: "Network error: Unable to connect to Kagi" }),
             ),
           );
-        yield* checkResponseStatus(response.status);
+        yield* checkResponseStatus(response);
         yield* checkNotAuthOrChallengeResponse(response.url, Option.none());
         const body = yield* response.text.pipe(
           Effect.mapError(
@@ -146,7 +132,7 @@ export class KagiHttp extends Context.Service<
         );
         yield* checkNotAuthOrChallengeResponse(response.url, Option.some(body));
         return body;
-      });
+      }, Effect.scoped);
       return KagiHttp.of({ text });
     }),
   );

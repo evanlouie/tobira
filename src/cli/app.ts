@@ -1,4 +1,4 @@
-import { Console, Effect, Match, Option } from "effect";
+import { Console, Effect } from "effect";
 import { Command } from "effect/unstable/cli";
 import pkg from "../../package.json";
 import { Action } from "../domain.ts";
@@ -8,11 +8,6 @@ import { runSummarizer } from "../tools/summarizer.ts";
 import { errorMessage } from "../utils/errors.ts";
 import { formatSearchBatch } from "../utils/formatting.ts";
 import { makeCli } from "./parser.ts";
-
-interface ExitReport {
-  readonly code: 1 | 2;
-  readonly diagnostic: Option.Option<string>;
-}
 
 const dispatch = Action.$match({
   Search: ({ input }) =>
@@ -25,25 +20,10 @@ const dispatch = Action.$match({
 export const runCli = makeCli(dispatch).pipe(
   Command.run({ version: pkg.version }),
   Effect.as(0),
-  Effect.catch((error) =>
-    Effect.gen(function* () {
-      // ShowHelp already carries a rendered diagnostic; other failures still need reporting.
-      const report: ExitReport = Match.value(error).pipe(
-        Match.tag("ShowHelp", () => ({ code: 2 as const, diagnostic: Option.none<string>() })),
-        Match.tag("ValidationError", (error) => ({
-          code: 2 as const,
-          diagnostic: Option.some(error.message),
-        })),
-        Match.orElse((error) => ({
-          code: 1 as const,
-          diagnostic: Option.some(errorMessage(error)),
-        })),
-      );
-      yield* Option.match(report.diagnostic, {
-        onNone: () => Effect.void,
-        onSome: (message) => Console.error(`Error: ${message}`),
-      });
-      return report.code;
-    }),
-  ),
+  Effect.catchTags({
+    // Effect CLI has already rendered ShowHelp.
+    ShowHelp: () => Effect.succeed(2),
+    ValidationError: (error) => Console.error(`Error: ${error.message}`).pipe(Effect.as(2)),
+  }),
+  Effect.catch((error) => Console.error(`Error: ${errorMessage(error)}`).pipe(Effect.as(1))),
 );

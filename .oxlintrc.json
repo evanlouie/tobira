@@ -5,6 +5,15 @@
   "rules": {
     "no-ternary": "error"
   },
+  "overrides": [
+    {
+      "files": ["tests/**/*.test.ts"],
+      "rules": {
+        "effecttsgo/async-function": "off",
+        "effecttsgo/schema-sync": "off"
+      }
+    }
+  ],
   "options": {
     "typeAware": true,
     "typeCheck": true

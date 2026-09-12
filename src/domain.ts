@@ -80,11 +80,12 @@ export const SummarizerFields = Schema.Struct({
 });
 
 /** Article length cannot exist on a keypoints or eli5 request. */
-export type SummaryStyle = Data.TaggedEnum<{
-  Article: { readonly length: Option.Option<typeof SummaryLength.Type> };
-  Keypoints: {};
-  Eli5: {};
-}>;
+export const SummaryStyleSchema = Schema.TaggedUnion({
+  Article: { length: Schema.Option(SummaryLength) },
+  Keypoints: {},
+  Eli5: {},
+});
+export type SummaryStyle = typeof SummaryStyleSchema.Type;
 export const SummaryStyle = Data.taggedEnum<SummaryStyle>();
 
 export type SummarySource = Data.TaggedEnum<{
@@ -122,7 +123,7 @@ export const SummarizerInput = Schema.Union([
     summary_length: SummarizerFields.fields.summary_length,
   }).pipe(
     Schema.decodeTo(
-      urlSummary(Schema.TaggedStruct("Article", { length: Schema.Option(SummaryLength) })),
+      urlSummary(SummaryStyleSchema.cases.Article),
       SchemaTransformation.transform({
         decode: (input) => ({
           source: SummarySource.Url({ input: input.url }),
@@ -144,7 +145,7 @@ export const SummarizerInput = Schema.Union([
     summary_length: noArticleLength,
   }).pipe(
     Schema.decodeTo(
-      urlSummary(Schema.TaggedStruct("Keypoints", {})),
+      urlSummary(SummaryStyleSchema.cases.Keypoints),
       SchemaTransformation.transform({
         decode: (input) => ({
           source: SummarySource.Url({ input: input.url }),
@@ -166,7 +167,7 @@ export const SummarizerInput = Schema.Union([
     summary_length: noArticleLength,
   }).pipe(
     Schema.decodeTo(
-      urlSummary(Schema.TaggedStruct("Eli5", {})),
+      urlSummary(SummaryStyleSchema.cases.Eli5),
       SchemaTransformation.transform({
         decode: (input) => ({
           source: SummarySource.Url({ input: input.url }),
