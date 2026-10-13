@@ -96,6 +96,22 @@ const frontendTags = (message: Buffer): ReadonlyArray<string> => {
   return tags
 }
 
+const frontendPreparedNames = (message: Buffer): ReadonlyArray<string> => {
+  const names: Array<string> = []
+  let offset = 0
+  while (offset < message.length) {
+    const tag = String.fromCharCode(message[offset])
+    const length = message.readInt32BE(offset + 1)
+    if (tag === "P") {
+      const nameStart = offset + 5
+      const nameEnd = message.indexOf(0, nameStart)
+      names.push(message.subarray(nameStart, nameEnd).toString())
+    }
+    offset += 1 + length
+  }
+  return names
+}
+
 const consumeFrontend = (
   socket: Net.Socket,
   onMessage: (tag: string | undefined, message: Buffer) => void
@@ -194,6 +210,40 @@ const withUnixServer = (
   )
 
 describe("PgConnection in-process server", () => {
+  it.live("forwards startup defaults and lets explicit fields override URL values", () =>
+    Effect.scoped(Effect.gen(function*() {
+      let parameters: ReadonlyMap<string, string> | undefined
+      const { port } = yield* withTcpServer((socket) => {
+        consumeFrontend(socket, (tag, message) => {
+          if (tag === undefined) {
+            parameters = startupParameters(message)
+            socket.write(Buffer.concat([authenticationOk, backendKeyData, readyForQuery]))
+          }
+        })
+      })
+      const config = {
+        host: "127.0.0.1",
+        port,
+        url: Redacted.make(
+          "postgres://test@localhost/db?application_name=url-app&options=-c%20statement_timeout%3D1234"
+        ),
+        startupParameters: { SEARCH_PATH: "public", CLIENT_ENCODING: "uTf-8", application_name: "named-app" }
+      }
+      yield* PgConnection.make(config)
+      assert.deepStrictEqual(Object.fromEntries(parameters!), {
+        user: "test",
+        database: "db",
+        application_name: "named-app",
+        search_path: "public",
+        client_encoding: "UTF8",
+        options: "-c statement_timeout=1234"
+      })
+
+      yield* PgConnection.make({ ...config, applicationName: "explicit-app", startupOptions: "-c lock_timeout=2345" })
+      assert.strictEqual(parameters!.get("application_name"), "explicit-app")
+      assert.strictEqual(parameters!.get("options"), "-c lock_timeout=2345")
+    })))
+
   it.effect("accepts backend messages over the default limit when configured", () =>
     Effect.gen(function*() {
       const fieldSize = 16 * 1024 * 1024
@@ -282,6 +332,41 @@ describe("PgConnection in-process server", () => {
       assert.deepStrictEqual(frontendTags(writes[1]), ["P", "B", "D", "E", "S", "P", "B", "D", "E", "S"])
     }))
 
+  it.effect("uses distinct prepared statement names across connections", () =>
+    Effect.gen(function*() {
+      const writes: Array<Array<Buffer>> = []
+      const makeStream = () => {
+        const connectionWrites: Array<Buffer> = []
+        const socket: Duplex = new Duplex({
+          read() {},
+          write(chunk: Buffer, _encoding, callback) {
+            connectionWrites.push(Buffer.from(chunk))
+            queueMicrotask(() => {
+              socket.push(
+                connectionWrites.length === 1
+                  ? Buffer.concat([authenticationOk, backendKeyData, readyForQuery])
+                  : emptyQueryResult
+              )
+            })
+            callback()
+          }
+        })
+        writes.push(connectionWrites)
+        return socket
+      }
+
+      const first = yield* PgConnection.make({ username: "test", stream: makeStream })
+      const second = yield* PgConnection.make({ username: "test", stream: makeStream })
+      yield* first.query("SELECT $1", [1])
+      yield* second.query("SELECT $1, $2", [1, 2])
+
+      const firstName = frontendPreparedNames(writes[0][1])
+      const secondName = frontendPreparedNames(writes[1][1])
+      assert.strictEqual(firstName.length, 1)
+      assert.strictEqual(secondName.length, 1)
+      assert.notStrictEqual(firstName[0], secondName[0])
+    }))
+
   it.effect("reuses a prepared name after a pending pipeline query is interrupted", () =>
     Effect.gen(function*() {
       const writes: Array<Buffer> = []
@@ -310,8 +395,9 @@ describe("PgConnection in-process server", () => {
       yield* connection.query("SELECT 1")
 
       assert.strictEqual(writes.length, 2)
-      const nameEnd = writes[1].indexOf(0, 5)
-      assert.strictEqual(writes[1].subarray(5, nameEnd).toString(), "effect1")
+      const names = frontendPreparedNames(writes[1])
+      assert.strictEqual(names.length, 1)
+      assert.match(names[0], /^effect_[0-9a-f]{16}_1$/)
     }))
 
   it.effect("ends a custom stream after writing Terminate", () =>
@@ -761,6 +847,34 @@ describe("PgConnection in-process server", () => {
       assert.strictEqual(connection.processId, 1234)
       assert.strictEqual(password, "secret")
     })))
+
+  it.live("resolves a password Effect for each connection", () =>
+    Effect.gen(function*() {
+      const passwords: Array<string> = []
+      const { port } = yield* withTcpServer((socket) => {
+        consumeFrontend(socket, (tag, message) => {
+          if (tag === undefined) {
+            socket.write(authentication(3))
+          } else if (tag === "p") {
+            passwords.push(message.subarray(5, -1).toString())
+            socket.write(Buffer.concat([authenticationOk, backendKeyData, readyForQuery]))
+          }
+        })
+      })
+      let calls = 0
+      const acquire = PgConnection.make({
+        host: "127.0.0.1",
+        port,
+        username: "test",
+        password: Effect.sync(() => Redacted.make(`secret-${++calls}`))
+      })
+
+      yield* Effect.scoped(acquire)
+      yield* acquire
+
+      assert.strictEqual(calls, 2)
+      assert.deepStrictEqual(passwords, ["secret-1", "secret-2"])
+    }))
 
   it.live("authenticates with an MD5 password request", () =>
     Effect.scoped(Effect.gen(function*() {
