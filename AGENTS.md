@@ -16,7 +16,7 @@ bunx @modelcontextprotocol/inspector bun src/index.ts mcp
 
 ## Coding style
 
-These conventions apply to application and test code, not the read-only vendored subtree. Effect idioms take precedence over ordinary TypeScript conventions.
+These conventions apply to application and test code, not the read-only vendored copy of Effect. Effect idioms take precedence over ordinary TypeScript conventions.
 
 ### Model the domain before writing control flow
 
@@ -56,9 +56,9 @@ Treat `if` and `if/else` trees as a modelling smell. First identify the domain d
 
 ## Effect version and reference
 
-This is an Effect v4 application running on Bun. `effect` and `@effect/platform-bun` are pinned to `4.0.0-rc.115`. When upgrading, use the latest v4 RC and keep platform package versions aligned.
+This is an Effect v4 application running on Bun. `effect` and `@effect/platform-bun` are pinned to `4.0.4`. Upgrade them together, and move `repos/effect/` to the matching `effect@<version>` release tag in the same change.
 
-Read `repos/effect/LLMS.md` before changing Effect code. The existing Git subtree under `repos/effect/` is a read-only reference. Inspect its examples and source, but check the installed RC declarations when the upstream snapshot differs. Runtime imports must come from installed packages, never from `repos/`.
+Read `repos/effect/LLMS.md` before changing Effect code. `repos/effect/` is a read-only copy of the `effect@4.0.4` release tag. Inspect its examples and source. Runtime imports must come from installed packages, never from `repos/`.
 
 ## Architecture
 
@@ -102,6 +102,6 @@ MCP exposes `kagi_search_fetch` and `kagi_summarizer`. Generate its input JSON S
 
 ## Tests and tooling
 
-`bunfig.toml` limits test discovery to `tests/`. `tsconfig.json` excludes the vendored subtree. Offline tests inject ConfigProvider, FileSystem, HttpClient, Kagi, and Stdio services rather than changing global state. Use TestClock for deterministic timeout tests. Use `Stream.toQueue` for the MCP test reply decoder so decode failures and stream completion reach the consumer instead of becoming timeouts.
+`bunfig.toml` limits test discovery to `tests/`. `tsconfig.json` excludes `repos/`. Offline tests inject ConfigProvider, FileSystem, HttpClient, Kagi, and Stdio services rather than changing global state. Use TestClock for deterministic timeout tests. Use `Stream.toQueue` for the MCP test reply decoder so decode failures and stream completion reach the consumer instead of becoming timeouts.
 
-`bun install` runs `effect-tsgo patch --oxlint`. `.oxlintrc.json` extends the recommended Effect preset for both source and tests. Test files disable only `effecttsgo/async-function` and `effecttsgo/schema-sync` to allow Bun test callbacks and direct synchronous schema assertions. `effecttsgo/schema-sync-in-effect` remains enabled; use effectful decoders inside generators. The TypeScript language-service plugin delegates diagnostics to Oxlint to avoid duplicates. Use the workspace TypeScript version in the editor.
+`bun install` runs `effect-tsgo patch --oxlint`. The patch fails on Oxlint versions that the installed `@effect/tsgo` does not support, so `oxlint` is pinned to an exact version. Raise the pin only after a `@effect/tsgo` release supports the newer Oxlint. `.oxlintrc.json` extends the recommended Effect preset for both source and tests. Test files disable only `effecttsgo/async-function` and `effecttsgo/schema-sync` to allow Bun test callbacks and direct synchronous schema assertions. `effecttsgo/schema-sync-in-effect` remains enabled; use effectful decoders inside generators. The TypeScript language-service plugin delegates diagnostics to Oxlint to avoid duplicates. Use the workspace TypeScript version in the editor.

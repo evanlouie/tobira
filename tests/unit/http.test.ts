@@ -1,11 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { Deferred, Effect, Fiber, Layer, Option, Redacted } from "effect";
-import {
-  FetchHttpClient,
-  HttpClient,
-  HttpClientRequest,
-  HttpClientResponse,
-} from "effect/unstable/http";
+import { FetchHttpClient, HttpClient, HttpClientRequest, HttpClientResponse } from "effect/http";
 import { TestClock } from "effect/testing";
 import {
   checkNotAuthOrChallengeResponse,

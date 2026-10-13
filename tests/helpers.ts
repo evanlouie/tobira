@@ -1,5 +1,5 @@
 import { Effect, Layer, Redacted } from "effect";
-import { HttpClient } from "effect/unstable/http";
+import { HttpClient } from "effect/http";
 import { Kagi } from "../src/kagi/client.ts";
 import { KagiHttp } from "../src/kagi/http.ts";
 import { Auth } from "../src/utils/auth.ts";

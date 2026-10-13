@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { BunServices } from "@effect/platform-bun";
 import { Array, Effect, Layer, Option, Ref } from "effect";
 import { TestConsole } from "effect/testing";
-import { Command } from "effect/unstable/cli";
+import { Command } from "effect/cli";
 import { makeCli } from "../../src/cli/parser.ts";
 import { Action, SummarySource, SummaryStyle } from "../../src/domain.ts";
 

@@ -16,7 +16,7 @@ const resolveBatch = ([first, ...rest]: Array.NonEmptyReadonlyArray<QueryOutcome
   SearchBatch,
   AllQueriesFailed
 > => {
-  const [failures, results] = Array.partition(rest, withQueryContext);
+  const [results, failures] = Array.partition(rest, withQueryContext);
   return Result.match(withQueryContext(first), {
     onSuccess: (first) =>
       Array.match(failures, {

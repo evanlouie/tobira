@@ -1,5 +1,5 @@
 import { Array, Context, Data, Effect, Layer, Option, Redacted, Schema, String } from "effect";
-import { HttpClient, HttpClientRequest, HttpClientResponse } from "effect/unstable/http";
+import { HttpClient, HttpClientRequest, HttpClientResponse } from "effect/http";
 import { Auth } from "../utils/auth.ts";
 import {
   AuthError,

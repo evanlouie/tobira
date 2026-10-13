@@ -1,6 +1,6 @@
 import { BunServices } from "@effect/platform-bun";
 import { Layer } from "effect";
-import { FetchHttpClient } from "effect/unstable/http";
+import { FetchHttpClient } from "effect/http";
 import { Kagi } from "./kagi/client.ts";
 import { KagiHttp } from "./kagi/http.ts";
 import { Auth } from "./utils/auth.ts";

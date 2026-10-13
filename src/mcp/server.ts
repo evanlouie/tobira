@@ -10,7 +10,7 @@ import {
   Stdio,
   Stream,
 } from "effect";
-import { McpProtocol, McpSchema, McpServer, Tool } from "effect/unstable/ai";
+import { McpProtocol, McpSchema, McpServer, Tool } from "effect/ai";
 import pkg from "../../package.json";
 import { Kagi } from "../kagi/client.ts";
 import { runSearch, searchToolConfig } from "../tools/search.ts";
@@ -32,7 +32,7 @@ const registerTool = Effect.fn("registerTool")(function* <A, I>(
   const server = yield* McpServer.McpServer;
   const services = yield* Effect.context<Kagi | Auth>();
   // MCP arguments are objects, including codecs whose wire schema is a union of objects.
-  const inputSchema = yield* Schema.decodeEffect(McpSchema.ToolJsonSchema)({
+  const inputSchema = yield* Schema.decodeEffect(McpSchema.ToolJson)({
     ...Tool.getJsonSchemaFromSchema(config.inputSchema),
     type: "object",
   }).pipe(Effect.orDie);

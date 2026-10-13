@@ -7,7 +7,7 @@ import {
   SummaryStyle,
   type SummaryRequest,
 } from "../domain.ts";
-import { HttpClientRequest } from "effect/unstable/http";
+import { HttpClientRequest } from "effect/http";
 import { HttpError, ParseError, ValidationError } from "../utils/errors.ts";
 import { isHtmlDocument } from "./http.ts";
 

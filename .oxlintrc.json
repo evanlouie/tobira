@@ -3,7 +3,8 @@
   "extends": ["./node_modules/@effect/tsgo/oxlint-presets/recommended.json"],
   "plugins": ["unicorn", "typescript", "oxc"],
   "rules": {
-    "no-ternary": "error"
+    "no-ternary": "error",
+    "effecttsgo/unstable-api-usage": "off"
   },
   "overrides": [
     {

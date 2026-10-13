@@ -1,5 +1,5 @@
 import { Console, Effect } from "effect";
-import { Command } from "effect/unstable/cli";
+import { Command } from "effect/cli";
 import pkg from "../../package.json";
 import { Action } from "../domain.ts";
 import { startMcpServer } from "../mcp/server.ts";

@@ -300,15 +300,18 @@ Each HTTP call owns a scope through body consumption. Status and challenge failu
 
 ### Effect reference and tooling
 
-`effect` and `@effect/platform-bun` are pinned to `4.0.0-rc.115`. The existing `repos/effect/` Git subtree is a read-only upstream reference, not a runtime dependency. Start with `repos/effect/LLMS.md`, then inspect its examples and source. The subtree tracks an upstream `main` snapshot, so check the installed RC declarations when an API differs.
+`effect` and `@effect/platform-bun` are pinned to `4.0.4`. `repos/effect/` is a read-only copy of the matching `effect@4.0.4` release tag, kept as a reference, not a runtime dependency. Start with `repos/effect/LLMS.md`, then inspect its examples and source.
 
-To update the reference from a clean working tree:
+When you upgrade `effect`, move the reference to the matching release tag. Run this with nothing staged:
 
 ```bash
-git subtree pull --prefix=repos/effect https://github.com/Effect-TS/effect.git main --squash
+git fetch --depth=1 https://github.com/Effect-TS/effect.git refs/tags/effect@<version>
+git rm -r -q repos/effect
+git read-tree --prefix=repos/effect/ -u FETCH_HEAD
+git commit -m "chore(deps): update vendored Effect to <version>"
 ```
 
-`bun install` runs `effect-tsgo patch --oxlint`. `.oxlintrc.json` extends Effect's recommended preset, and `tsconfig.json` enables the language-service plugin with diagnostics delegated to Oxlint. Use the workspace TypeScript version in your editor.
+`bun install` runs `effect-tsgo patch --oxlint`. The patch fails on Oxlint versions that the installed `@effect/tsgo` does not support, so `oxlint` is pinned to an exact version. Raise the pin only after a `@effect/tsgo` release supports the newer Oxlint. `.oxlintrc.json` extends Effect's recommended preset, and `tsconfig.json` enables the language-service plugin with diagnostics delegated to Oxlint. Use the workspace TypeScript version in your editor.
 
 Type-checking and test discovery exclude `repos/`; `bun test` runs only this app's tests. `bun run lint` checks both source and tests. Test-only overrides allow Bun's async callbacks and direct synchronous schema assertions; effectful code inside tests still receives the other Effect diagnostics.
 

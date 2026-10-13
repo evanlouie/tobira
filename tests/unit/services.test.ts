@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { Boolean, Deferred, Effect, Layer, Option, Schema } from "effect";
-import { HttpClient, HttpClientResponse } from "effect/unstable/http";
+import { HttpClient, HttpClientResponse } from "effect/http";
 import { SearchInput, SummarizerInput, SummarySource, SummaryStyle } from "../../src/domain.ts";
 import { Kagi } from "../../src/kagi/client.ts";
 import { buildSummaryRequest } from "../../src/kagi/summarize.ts";
