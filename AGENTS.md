@@ -52,7 +52,7 @@ Treat `if` and `if/else` trees as a modelling smell. First identify the domain d
 - Use Effect for asynchronous control flow, concurrency, cancellation, timeouts, and resource management. Keep promises and runtime execution at integration boundaries, not in domain operations.
 - Define reusable effectful operations with `Effect.fn`; use `Effect.fnUntraced` where tracing adds no value and `Effect.gen` for inline programs.
 - Define services with `Context.Service` and inject implementations through layers. Compose live services in `src/services.ts`. Use Effect's configuration, filesystem, path, HTTP, CLI, and MCP modules.
-- Keep designs simple. Add types that express real distinctions, not wrappers around every value. Cheerio remains the HTML parsing boundary because Effect does not replace that parser.
+- Keep designs simple. Add types that express real distinctions, not wrappers around every value. htmlparser2 and css-select remain the HTML parsing boundary because Effect does not replace an HTML parser.
 
 ## Effect version and reference
 
@@ -74,7 +74,7 @@ The CLI and MCP adapters call shared Effect runners. No separate MCP SDK, Zod, n
 | `src/mcp/server.ts` | Effect MCP stdio server and Schema-derived tool registration |
 | `src/kagi/client.ts` | Injectable Kagi search and summarization service |
 | `src/kagi/http.ts` | Authenticated Effect HttpClient calls and response validation |
-| `src/kagi/search.ts` | Cheerio search-page parser |
+| `src/kagi/search.ts` | htmlparser2 and css-select search-page parser |
 | `src/kagi/summarize.ts` | Outgoing summary encoding and NUL-delimited frame parser |
 | `src/tools/` | Shared runners with ordered concurrent search and timeouts |
 | `src/utils/` | Authentication, error classes, formatting, and timeout composition |

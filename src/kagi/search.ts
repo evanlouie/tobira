@@ -1,6 +1,7 @@
-import * as cheerio from "cheerio";
-import type { AnyNode } from "domhandler";
-import { Array, Data, Effect, Filter, Option, Schema, String } from "effect";
+import { compile, selectAll, selectOne } from "css-select";
+import { type AnyNode, type Document, type Element, hasChildren, isText } from "domhandler";
+import { Array, Data, Effect, Filter, Match, Option, Schema, String } from "effect";
+import { DomUtils, parseDocument } from "htmlparser2";
 import { SearchResult } from "../domain.ts";
 import { ParseError } from "../utils/errors.ts";
 
@@ -15,21 +16,46 @@ const SearchPage = Data.taggedEnum<SearchPage>();
 const normalizeText = (value: string): string => String.trim(String.replace(/\s+/g, " ")(value));
 const nonEmpty = Schema.decodeUnknownOption(Schema.NonEmptyString);
 
-function classifySearchPage($: cheerio.CheerioAPI, limit: number): SearchPage {
-  return Array.match($(".search-result, .sr-group .__srgi").toArray(), {
+// css-select queries the descendants of the root. Absence becomes Option at this HTML boundary.
+const selectElements = (query: string, root: AnyNode): ReadonlyArray<Element> =>
+  selectAll<AnyNode, Element>(query, root);
+const selectFirst =
+  (query: string) =>
+  (root: AnyNode): Option.Option<Element> =>
+    Option.fromNullishOr(selectOne<AnyNode, Element>(query, root));
+
+const isSnippetMetadata = compile<AnyNode, Element>(".summarize-link, .__sri-time");
+
+/** Text content without the summarize links and date badges that Kagi renders in snippets. */
+const snippetText: (node: AnyNode) => string = Match.type<AnyNode>().pipe(
+  Match.when(isSnippetMetadata, () => ""),
+  Match.when(isText, ({ data }) => data),
+  Match.when(hasChildren, ({ children }) => Array.join(Array.map(children, snippetText), "")),
+  Match.orElse(() => ""),
+);
+
+/** htmlparser2 adds no implicit body, so markup without one falls back to the whole document. */
+const pageText = (document: Document): string =>
+  selectFirst("body")(document).pipe(
+    Option.map(DomUtils.textContent),
+    Option.getOrElse(() => DomUtils.textContent(document)),
+  );
+
+function classifySearchPage(document: Document, limit: number): SearchPage {
+  return Array.match(selectElements(".search-result, .sr-group .__srgi", document), {
     onNonEmpty: () =>
       SearchPage.Results({
         data: Array.take(
           Array.appendAll(
-            extractResults($, ".search-result", ".__sri_title_link"),
-            extractResults($, ".sr-group .__srgi", ".__srgi-title a"),
+            extractResults(document, ".search-result", ".__sri_title_link"),
+            extractResults(document, ".sr-group .__srgi", ".__srgi-title a"),
           ),
           limit,
         ),
       }),
     onEmpty: () =>
       Array.findFirst(["no results", "couldn't find any results", "did not match any"], (marker) =>
-        String.includes(marker)(String.toLowerCase(normalizeText($("body").text()))),
+        String.includes(marker)(String.toLowerCase(normalizeText(pageText(document)))),
       ).pipe(
         Option.match({
           onSome: () => SearchPage.NoResults(),
@@ -49,11 +75,16 @@ type DateSource = Data.TaggedEnum<{
 }>;
 const DateSource = Data.taggedEnum<DateSource>();
 
-function extractPublishedDateAndSnippet(description: cheerio.Cheerio<AnyNode>) {
-  const content = description.clone();
-  content.find(".summarize-link").remove();
-  const spanDate = nonEmpty(normalizeText(content.find(".__sri-time").first().text()));
-  const snippet = normalizeText(content.find(".__sri-time").remove().end().text());
+function extractPublishedDateAndSnippet(description: Option.Option<Element>) {
+  const spanDate = description.pipe(
+    Option.flatMap(selectFirst(".__sri-time")),
+    Option.map((time) => normalizeText(DomUtils.textContent(time))),
+    Option.flatMap(nonEmpty),
+  );
+  const snippet = description.pipe(
+    Option.map((content) => normalizeText(snippetText(content))),
+    Option.getOrElse(() => ""),
+  );
   const source = spanDate.pipe(
     Option.map((date) => DateSource.Metadata({ date })),
     Option.orElse(() =>
@@ -74,28 +105,27 @@ function extractPublishedDateAndSnippet(description: cheerio.Cheerio<AnyNode>) {
   });
 }
 
-function extractResult(
-  element: cheerio.Cheerio<AnyNode>,
-  titleLink: cheerio.Cheerio<AnyNode>,
-): Option.Option<SearchResult> {
+function extractResult(element: Element, titles: string): Option.Option<SearchResult> {
   const { publishedDate, snippet } = extractPublishedDateAndSnippet(
-    element.find(".__sri-desc").first(),
+    selectFirst(".__sri-desc")(element),
   );
-  // Cheerio's nullable attributes are decoded at the HTML boundary, not propagated into the domain.
-  return Schema.decodeUnknownOption(SearchResult)({
-    title: normalizeText(titleLink.text()),
-    url: titleLink.attr("href"),
-    snippet,
-    publishedDate: Option.getOrUndefined(publishedDate),
-  });
+  // Missing attributes are decoded at the HTML boundary, not propagated into the domain.
+  return selectFirst(titles)(element).pipe(
+    Option.flatMap((titleLink) =>
+      Schema.decodeUnknownOption(SearchResult)({
+        title: normalizeText(DomUtils.textContent(titleLink)),
+        url: DomUtils.getAttributeValue(titleLink, "href"),
+        snippet,
+        publishedDate: Option.getOrUndefined(publishedDate),
+      }),
+    ),
+  );
 }
 
-function extractResults($: cheerio.CheerioAPI, items: string, titles: string) {
+function extractResults(document: Document, items: string, titles: string) {
   return Array.filterMap(
-    $(items).toArray(),
-    Filter.fromPredicateOption((element: AnyNode) =>
-      extractResult($(element), $(element).find(titles).first()),
-    ),
+    selectElements(items, document),
+    Filter.fromPredicateOption((element: Element) => extractResult(element, titles)),
   );
 }
 
@@ -103,14 +133,14 @@ export const parseSearchResults = Effect.fn("parseSearchResults")(function* (
   html: string,
   limit: number,
 ) {
-  const $ = yield* Effect.try({
-    try: () => cheerio.load(html),
+  const document = yield* Effect.try({
+    try: () => parseDocument(html),
     catch: () =>
       new ParseError({
         message: "Failed to parse search results - unexpected HTML structure",
       }),
   });
-  return yield* SearchPage.$match(classifySearchPage($, limit), {
+  return yield* SearchPage.$match(classifySearchPage(document, limit), {
     NoResults: () => Effect.succeed<ReadonlyArray<SearchResult>>([]),
     Unexpected: () =>
       Effect.fail(

@@ -283,7 +283,7 @@ CLI / MCP → shared tool runners → Kagi → KagiHttp → Effect HttpClient
 | `src/mcp/server.ts` | Effect MCP stdio transport and Schema-derived tool definitions |
 | `src/kagi/client.ts` | Injectable Kagi search and summarization service |
 | `src/kagi/http.ts` | Authenticated HTTP requests, response validation, and challenge detection |
-| `src/kagi/search.ts` | Cheerio HTML boundary and search-page classification |
+| `src/kagi/search.ts` | htmlparser2 and css-select HTML boundary and search-page classification |
 | `src/kagi/summarize.ts` | Summary request encoding and NUL-delimited frame decoding |
 | `src/tools/` | Shared runners, concurrent searches, partial results, and timeouts |
 | `src/utils/` | Authentication, typed errors, formatting, and timeout composition |
